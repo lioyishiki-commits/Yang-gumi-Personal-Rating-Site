@@ -216,3 +216,35 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Yang-gumi private local state
+data/*
+!data/.gitkeep
+backups/*
+!backups/.gitkeep
+exports/*
+!exports/.gitkeep
+covers/*
+!covers/.gitkeep
+!covers/default.svg
+backgrounds/*
+!backgrounds/.gitkeep
+static/daily_art/
+static/backgrounds/
+static/bangumi_rank_posters/
+static/seasonal_posters/
+static/ui/*
+!static/ui/README.md
+public_data.json
+*.db
+*.db-*
+*.sqlite*
+*.token
+*.tmp
+work/
+artifacts/
+
+# Local launcher and tunnel output
+*.out.log
+*.err.log
+给访客打开 Yang-gumi.*
