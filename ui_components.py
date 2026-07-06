@@ -1456,23 +1456,27 @@ def inject_css(settings: dict[str, Any] | None = None) -> None:
       .st-key-home_recent_grid [class*="st-key-recent_row_"]>div[data-testid="stVerticalBlockBorderWrapper"]>div[data-testid="stVerticalBlock"],
       .st-key-home_recent_grid [class*="st-key-recent_finished_row_"]>div[data-testid="stVerticalBlockBorderWrapper"]>div[data-testid="stVerticalBlock"] {{height:100%;}}
       .st-key-home_recent_grid [class*="st-key-recent_row_"] [data-testid="stHorizontalBlock"],
-      .st-key-home_recent_grid [class*="st-key-recent_finished_row_"] [data-testid="stHorizontalBlock"] {{display:grid!important;grid-template-columns:136px minmax(0,1fr) 170px!important;gap:28px!important;height:100%;align-items:center!important;}}
+      .st-key-home_recent_grid [class*="st-key-recent_finished_row_"] [data-testid="stHorizontalBlock"] {{display:grid!important;grid-template-columns:clamp(104px,7.1vw,136px) minmax(0,1fr) clamp(126px,8.85vw,170px)!important;gap:clamp(14px,1.25vw,28px)!important;height:100%;align-items:center!important;}}
       .st-key-home_recent_grid [class*="st-key-recent_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"],
       .st-key-home_recent_grid [class*="st-key-recent_finished_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"] {{width:auto!important;min-width:0!important;max-width:none!important;flex:unset!important;}}
       .st-key-home_recent_grid [class*="st-key-recent_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:nth-child(1),
-      .st-key-home_recent_grid [class*="st-key-recent_finished_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:nth-child(1) {{width:136px!important;display:flex!important;justify-content:center!important;}}
+      .st-key-home_recent_grid [class*="st-key-recent_finished_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:nth-child(1) {{width:clamp(104px,7.1vw,136px)!important;display:flex!important;justify-content:center!important;}}
       .st-key-home_recent_grid [class*="st-key-recent_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:nth-child(2),
       .st-key-home_recent_grid [class*="st-key-recent_finished_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:nth-child(2) {{min-width:0!important;padding-left:0!important;overflow:hidden;}}
       .st-key-home_recent_grid [class*="st-key-recent_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:nth-child(3),
-      .st-key-home_recent_grid [class*="st-key-recent_finished_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:nth-child(3) {{width:170px!important;align-self:stretch;display:flex!important;align-items:center!important;}}
-      .st-key-home_recent_grid .yg-work-title {{min-height:31px;}}
+      .st-key-home_recent_grid [class*="st-key-recent_finished_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:nth-child(3) {{width:clamp(126px,8.85vw,170px)!important;align-self:stretch;display:flex!important;align-items:center!important;}}
+      .st-key-home_recent_grid .yg-work-title {{min-width:0;min-height:31px;}}
       .st-key-home_recent_grid .yg-work-title strong {{display:-webkit-box;overflow:hidden;-webkit-box-orient:vertical;-webkit-line-clamp:1;}}
+      .st-key-home_recent_grid .yg-score-row {{flex-wrap:nowrap;gap:clamp(.2rem,.3vw,.38rem);}}
+      .st-key-home_recent_grid .yg-score-row>span {{min-width:0;padding:.32rem clamp(.3rem,.4vw,.5rem);}}
+      .st-key-home_recent_grid .yg-score-row small {{font-size:clamp(10px,.63vw,12px)!important;}}
+      .st-key-home_recent_grid .yg-score-row b {{font-size:clamp(13px,.79vw,15px)!important;}}
       .st-key-home_recent_grid .yg-work-original {{height:25px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;}}
       .st-key-home_recent_grid .yg-work-votes {{height:25px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;}}
       .st-key-home_recent_grid .yg-work-tags {{height:31px;overflow:hidden;white-space:nowrap;}}
       .st-key-home_recent_grid .yg-review-line {{height:23px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;}}
       .st-key-home_recent_grid .yg-work-finish {{height:22px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;}}
-      .st-key-home_recent_grid [data-testid="stImage"] img {{width:112px!important;min-width:112px;height:168px!important;object-fit:cover;}}
+      .st-key-home_recent_grid [data-testid="stImage"] img {{width:clamp(88px,6vw,112px)!important;min-width:clamp(88px,6vw,112px);height:auto!important;aspect-ratio:2/3;object-fit:cover;}}
 
       [class*="_grid_card_"]>div[data-testid="stVerticalBlockBorderWrapper"] {{height:548px;min-height:548px;padding:.9rem;overflow:hidden;}}
       [class*="_grid_card_"]>div[data-testid="stVerticalBlockBorderWrapper"]>div[data-testid="stVerticalBlock"] {{display:flex;height:100%;flex-direction:column;}}

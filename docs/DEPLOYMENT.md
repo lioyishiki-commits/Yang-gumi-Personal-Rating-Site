@@ -1,17 +1,24 @@
 # 部署与迁移
 
-## 运行条件
+## 下载项与安装前检查
 
-- Python 3.11 或更高版本
-- 支持现代 JavaScript 的浏览器
+- 64 位 Windows 10/11（macOS、Linux 也可按下文手动安装）
+- 推荐 Python 3.13.x 64 位完整版；支持范围为 Python 3.10-3.14
+- Python 安装时勾选 `Add python.exe to PATH`，完成后运行 `py -3.13 --version`
+- 至少 4 GB 可用磁盘空间；首次安装依赖时保持联网
+- Chrome、Edge 或 Firefox；兼容旧版 Chromium Edge，不支持 Internet Explorer
 - 首次安装依赖、搜索 Bangumi、刷新季度数据时需要联网
 - 日常条目管理与已缓存内容可以只在本机使用
+
+从 ZIP 使用不需要 GitHub 账号，也不需要预装 Git、Node.js、Java、SQLite
+管理器或其他数据库。Python 官方 Windows 下载页：
+https://www.python.org/downloads/windows/
 
 Yang-gumi 默认只监听 `127.0.0.1:8501`，局域网和互联网中的其他设备无法直接访问主站。
 
 ## 新电脑安装
 
-Windows 用户下载并解压仓库后双击 `安装并启动 Yang-gumi.bat`。脚本会在项目目录创建 `.venv`，因此不会改动其他 Python 项目。macOS 或 Linux 使用 `./install_and_start.sh`。
+Windows 用户下载并解压仓库后双击 `安装并启动 Yang-gumi.bat`。脚本优先使用 Python 3.13，检查 64 位与版本范围，随后在项目目录创建 `.venv`、安装固定版本依赖并安装旧 Edge 兼容前端，因此不会改动其他 Python 项目。macOS 或 Linux 使用 `./install_and_start.sh`。
 
 首次运行会自动创建：
 

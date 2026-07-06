@@ -11,6 +11,8 @@ import webbrowser
 from pathlib import Path
 from datetime import datetime
 
+from frontend_compat import ensure_streamlit_frontend_compatibility
+
 
 ROOT = Path(__file__).resolve().parent
 APP = ROOT / "app.py"
@@ -59,6 +61,13 @@ def main() -> int:
         print("请先安装 requirements.txt 中的依赖，再重新双击启动文件。")
         print("高级安装命令：python -m pip install -r requirements.txt")
         return 3
+
+    try:
+        ensure_streamlit_frontend_compatibility()
+    except RuntimeError as exc:
+        log(f"前端兼容检查失败：{exc}")
+        print(f"\n前端兼容检查失败：{exc}")
+        return 7
 
     if streamlit_is_healthy():
         log("检测到 8501 上已有健康的 Streamlit 实例，直接打开浏览器")

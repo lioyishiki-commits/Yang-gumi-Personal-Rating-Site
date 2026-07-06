@@ -10,7 +10,7 @@ if exist ".venv\Scripts\python.exe" (
 
 where python >nul 2>nul
 if errorlevel 1 (
-    echo 未找到 Python。请先安装 Python 3.11 或更高版本。
+    echo 未找到 Python。请先安装 Python 3.13.x 64 位完整版。
     echo 安装完成后再双击本文件。
     pause
     exit /b 1

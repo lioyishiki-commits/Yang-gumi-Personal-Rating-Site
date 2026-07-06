@@ -12,9 +12,19 @@
 - JSON、CSV、SQLite 备份、恢复与只读局域网分享
 - 所有私人数据、令牌、缓存和本地图片都被 Git 忽略
 
+## Windows：安装前先准备
+
+1. 使用 **64 位 Windows 10 或 Windows 11**，预留至少 **4 GB** 可用空间。
+2. 从 Python 官网安装 **Python 3.13.x 64 位完整版（推荐）**。项目支持 Python 3.10-3.14，但发布测试以 3.13 为基线。安装界面必须勾选 **Add python.exe to PATH**。
+3. 安装后打开“命令提示符”，运行 `py -3.13 --version`；能显示版本号再继续。
+4. 首次安装依赖和首次读取 Bangumi 数据需要联网。普通 ZIP 用户不需要提前安装 Git、Node.js、Java、数据库或开发工具。
+5. 准备 Chrome、Edge 或 Firefox。项目附带旧版 Chromium Edge 兼容前端；Internet Explorer 不受支持。
+
+Python 官方下载页：https://www.python.org/downloads/windows/
+
 ## Windows：第一次使用
 
-1. 安装 [Python 3.11 或更高版本](https://www.python.org/downloads/)，安装时勾选 **Add Python to PATH**。
+1. 确认已经完成上面的 Python 3.13.x 64 位安装与版本检查。
 2. 下载本仓库：右上角 **Code → Download ZIP**，解压到一个长期保留的文件夹。
 3. 双击 **`安装并启动 Yang-gumi.bat`**。脚本会创建独立环境、安装依赖并打开网站。
 4. 浏览器默认打开 `http://127.0.0.1:8501`。首次运行会自动创建空数据库。
@@ -57,6 +67,9 @@ chmod +x install_and_start.sh
 - [使用说明](docs/USER_GUIDE.md)
 - [隐私说明](docs/PRIVACY.md)
 - [`docs/Yang-gumi_新电脑部署与完整使用说明_20260704.docx`](docs/Yang-gumi_新电脑部署与完整使用说明_20260704.docx)（适合离线阅读）
+- [`docs/Yang-gumi配置说明.docx`](docs/Yang-gumi配置说明.docx)（完整修订版，不删减原说明）
+- [第三方组件声明](THIRD_PARTY_NOTICES.md)
+- [公开发行包内容与隐私排除清单](RELEASE_CONTENTS.md)
 
 ## 开发与测试
 

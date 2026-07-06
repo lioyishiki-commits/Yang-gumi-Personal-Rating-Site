@@ -5,3 +5,4 @@
 *.sh text eol=lf
 *.bat text eol=crlf
 *.docx binary
+compat/streamlit-1.58.0/index.dkY5s53S.js binary

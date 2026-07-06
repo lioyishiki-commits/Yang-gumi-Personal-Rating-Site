@@ -7,6 +7,8 @@ if exist ".venv\Scripts\python.exe" goto install
 
 where py >nul 2>nul
 if errorlevel 1 goto try_python
+py -3.13 -m venv .venv
+if not errorlevel 1 goto venv_ready
 py -3 -m venv .venv
 goto venv_ready
 
@@ -19,6 +21,8 @@ python -m venv .venv
 if errorlevel 1 goto venv_failed
 
 :install
+".venv\Scripts\python.exe" -c "import struct,sys; assert sys.version_info >= (3,10) and struct.calcsize('P') * 8 == 64"
+if errorlevel 1 goto unsupported_python
 echo 正在准备 Yang-gumi 的独立运行环境……
 set "PIP_NO_DEPS=false"
 ".venv\Scripts\python.exe" -m pip install --upgrade pip
@@ -35,6 +39,11 @@ exit /b 0
 :no_python
 echo 未找到 Python。请先从 https://www.python.org/downloads/ 安装 Python 3.11 或更高版本。
 echo 安装时请勾选 Add Python to PATH，然后重新双击本文件。
+goto pause_and_exit
+
+:unsupported_python
+echo Yang-gumi requires 64-bit Python 3.10-3.14; Python 3.13.x 64-bit is recommended.
+echo Remove the incorrect 32-bit install, delete .venv, and run this file again.
 goto pause_and_exit
 
 :venv_failed

@@ -11,6 +11,8 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
+from frontend_compat import ensure_streamlit_frontend_compatibility
+
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
@@ -78,6 +80,16 @@ def replace_lan_url(text: str, url: str) -> str:
     return pattern.sub(line, text, count=1) if pattern.search(text) else f"{line}\n{text}"
 
 
+def streamlit_server_ready(timeout: float = 1.5) -> bool:
+    health = f"http://127.0.0.1:{PORT}/_stcore/health"
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(health, timeout=timeout) as response:
+            return response.status == 200
+    except OSError:
+        return False
+
+
 def update_launchers(url: str) -> None:
     CURRENT_URL_PATH.write_text(url, encoding="utf-8")
     if BAT_PATH.exists():
@@ -117,12 +129,20 @@ def terminate(process: subprocess.Popen[bytes] | None) -> None:
 
 
 def main() -> None:
+    ensure_streamlit_frontend_compatibility()
     token = share_token()
     host = lan_address()
     url = f"http://{host}:{PORT}/?access={token}"
     env = dict(os.environ)
     env["YANGGUMI_SHARE_TOKEN"] = token
     env["YANGGUMI_READ_ONLY"] = "1"
+    env["STREAMLIT_GLOBAL_DEVELOPMENT_MODE"] = "false"
+    if streamlit_server_ready():
+        update_launchers(url)
+        print("Yang-gumi 只读分享已经在运行，请勿重复启动。", flush=True)
+        if os.getenv("YANGGUMI_NO_BROWSER", "0") != "1":
+            webbrowser.open(url)
+        return
     streamlit: subprocess.Popen[bytes] | None = None
     try:
         streamlit = subprocess.Popen(
@@ -132,6 +152,8 @@ def main() -> None:
                 "streamlit",
                 "run",
                 str(ROOT / "app.py"),
+                "--global.developmentMode",
+                "false",
                 "--server.address",
                 "0.0.0.0",
                 "--server.port",
@@ -155,7 +177,8 @@ def main() -> None:
         print("把更新后的“启动只读分享.bat”直接发给访客即可；访客不需要 Python。", flush=True)
         print("请保持本窗口开启，并让访客连接与你相同的 Wi-Fi / 局域网。", flush=True)
         print("你保存的数据会被访客页面实时读取；访客不能修改。\n", flush=True)
-        webbrowser.open(url)
+        if os.getenv("YANGGUMI_NO_BROWSER", "0") != "1":
+            webbrowser.open(url)
         while streamlit.poll() is None:
             time.sleep(2)
     except KeyboardInterrupt:
