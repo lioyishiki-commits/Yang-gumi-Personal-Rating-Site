@@ -10,7 +10,7 @@
 - 当季新番浏览、状态关联与本地海报缓存
 - “今日美图”本地图库，支持竖屏与壁纸文件夹、智能焦点裁切和定时重建索引
 - JSON、CSV、SQLite 备份、恢复与只读局域网分享
-- 所有私人数据、令牌、缓存和本地图片都被 Git 忽略
+- 数据库、令牌、缓存和本地图片默认不会被 Git 跟踪
 
 ## Windows：安装前先准备
 
@@ -18,7 +18,7 @@
 2. 从 Python 官网安装 **Python 3.13.x 64 位完整版（推荐）**。项目支持 Python 3.10-3.14，但发布测试以 3.13 为基线。安装界面必须勾选 **Add python.exe to PATH**。
 3. 安装后打开“命令提示符”，运行 `py -3.13 --version`；能显示版本号再继续。
 4. 首次安装依赖和首次读取 Bangumi 数据需要联网。普通 ZIP 用户不需要提前安装 Git、Node.js、Java、数据库或开发工具。
-5. 准备 Chrome、Edge 或 Firefox。项目附带旧版 Chromium Edge 兼容前端；Internet Explorer 不受支持。
+5. 准备 Chrome、Edge 或 Firefox。无需安装浏览器扩展；Internet Explorer 不受支持。
 
 Python 官方下载页：https://www.python.org/downloads/windows/
 
@@ -29,6 +29,8 @@ Python 官方下载页：https://www.python.org/downloads/windows/
 3. 双击 **`安装并启动 Yang-gumi.bat`**。脚本会创建独立环境、安装依赖并打开网站。
 4. 浏览器默认打开 `http://127.0.0.1:8501`。首次运行会自动创建空数据库。
 5. 以后双击 **`启动 Yang-gumi.bat`** 即可。
+
+在虚拟机中使用时，建议至少分配 2 个处理器核心和 4 GB 内存，并确认虚拟机可以正常访问互联网。无 VPN 或代理不会影响本地条目管理，但 Bangumi 搜索、季度数据和封面下载可能因网络状况变慢；等待片刻或稍后重试即可。
 
 如果只想使用命令行：
 
@@ -69,7 +71,7 @@ chmod +x install_and_start.sh
 - [`docs/Yang-gumi_新电脑部署与完整使用说明_20260704.docx`](docs/Yang-gumi_新电脑部署与完整使用说明_20260704.docx)（适合离线阅读）
 - [`docs/Yang-gumi配置说明.docx`](docs/Yang-gumi配置说明.docx)（完整修订版，不删减原说明）
 - [第三方组件声明](THIRD_PARTY_NOTICES.md)
-- [公开发行包内容与隐私排除清单](RELEASE_CONTENTS.md)
+- [更新记录](CHANGELOG.md)
 
 ## 开发与测试
 
