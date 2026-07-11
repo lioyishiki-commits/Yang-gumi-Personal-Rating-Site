@@ -46,6 +46,15 @@ class PublicAndDailyArtTest(unittest.TestCase):
         self.assertNotIn("export_json", source)
         self.assertIn("0.0.0.0", source)
 
+    def test_read_only_batch_supports_owner_and_standalone_visitor(self):
+        root = Path(__file__).parents[1]
+        source = root.joinpath("启动只读分享.bat").read_text(encoding="utf-8")
+        self.assertIn('if exist "%~dp0share_public.py" goto owner', source)
+        self.assertIn("goto visitor", source)
+        self.assertIn("$request.Proxy=$null", source)
+        self.assertIn("--proxy-server=direct://", source)
+        self.assertIn("192.168.81.1:8502", source)
+
     def test_private_tag_input_and_display_are_removed(self):
         source = Path(__file__).parents[1].joinpath("app.py").read_text(encoding="utf-8")
         self.assertNotIn('text_input("私人标签', source)
