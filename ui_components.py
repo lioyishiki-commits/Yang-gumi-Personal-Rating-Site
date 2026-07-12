@@ -879,7 +879,7 @@ def inject_css(settings: dict[str, Any] | None = None) -> None:
     st.markdown(f"""
     <style>
       :root {{--yg-pink:#ff5c8a;--yg-pink-2:#ff86ae;--yg-cyan:#55d9ff;--yg-violet:#8f7cff;--yg-bg:#080a12;--yg-panel:#121622;--yg-line:rgba(153,169,205,.18);}}
-      html {{scroll-behavior:smooth;}}
+      html {{scroll-behavior:smooth;color-scheme:dark!important;}}
       body, [data-testid="stAppViewContainer"] {{background:radial-gradient(circle at 82% 0%,rgba(113,78,191,.16),transparent 32%),radial-gradient(circle at 22% 8%,rgba(255,67,126,.12),transparent 30%),#080a12;color:#f4f6fb;}}
       [data-testid="stHeader"] {{background:rgba(8,10,18,.58); backdrop-filter:blur(18px); border-bottom:1px solid rgba(255,255,255,.05);}}
       .block-container {{max-width:1320px; padding-top:2.1rem; padding-bottom:5rem; position:relative; z-index:2;}}
@@ -1059,7 +1059,15 @@ def inject_css(settings: dict[str, Any] | None = None) -> None:
       .stButton button:hover {{transform:none;border-color:rgba(214,90,122,.55);background:#28292d;box-shadow:none;}}
       .stButton button[kind="primary"] {{border:1px solid rgba(214,90,122,.48);background:#762b41;box-shadow:none;}}
       [data-baseweb="input"],[data-baseweb="select"]>div,[data-baseweb="textarea"] {{background:#111214!important;border-color:var(--yg-line)!important;border-radius:9px!important;}}
+      [data-baseweb="base-input"],[data-baseweb="input"]>div,[data-testid="stNumberInput"]>div,[data-testid="stDateInput"]>div {{background:#111214!important;color:#e7e7e9!important;}}
+      [data-baseweb="input"] input,[data-baseweb="base-input"] input,[data-baseweb="textarea"] textarea,[data-testid="stNumberInput"] input,[data-testid="stDateInput"] input,input:not([type="checkbox"]):not([type="radio"]),textarea,select {{background-color:#111214!important;color:#e7e7e9!important;-webkit-text-fill-color:#e7e7e9!important;caret-color:#e7e7e9!important;color-scheme:dark!important;}}
+      [data-baseweb="select"] input,[data-baseweb="select"] span,[data-baseweb="select"] svg,[data-testid="stNumberInput"] svg,[data-testid="stDateInput"] svg {{color:#e7e7e9!important;fill:#e7e7e9!important;-webkit-text-fill-color:#e7e7e9!important;}}
+      [data-testid="stNumberInput"] button,[data-testid="stDateInput"] button {{background:#17181b!important;color:#e7e7e9!important;border-color:var(--yg-line)!important;}}
+      [data-testid="stFileUploaderDropzone"],div[role="listbox"],ul[role="listbox"] {{background:#151619!important;color:#e7e7e9!important;border-color:var(--yg-line)!important;color-scheme:dark!important;}}
+      input:-webkit-autofill,input:-webkit-autofill:hover,input:-webkit-autofill:focus {{-webkit-box-shadow:0 0 0 1000px #111214 inset!important;-webkit-text-fill-color:#e7e7e9!important;}}
+      input:disabled,textarea:disabled,[aria-disabled="true"] {{opacity:.72!important;background:#17181b!important;color:#a8a9ae!important;-webkit-text-fill-color:#a8a9ae!important;}}
       [data-testid="stExpander"] {{border:1px solid var(--yg-line)!important;border-radius:11px!important;background:#151619!important;}}
+      [data-testid="stExpander"] details,[data-testid="stExpander"] summary {{background:#151619!important;color:#e7e7e9!important;color-scheme:dark!important;}}
       [data-testid="stAlert"] {{border-radius:10px;background:#161a20;}}
       .yg-section-heading {{margin:1.35rem 0 .65rem;padding-bottom:.55rem;border-bottom:1px solid var(--yg-line);}}
       .yg-section-heading small {{color:var(--yg-pink);font-size:.52rem;}}

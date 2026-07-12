@@ -82,6 +82,30 @@ class PublicAndDailyArtTest(unittest.TestCase):
             finally:
                 daily_art.LOCAL_ROOTS, daily_art.MANIFEST_PATH, daily_art.ASSET_DIR = old
 
+    def test_manifest_finds_images_in_deeply_nested_new_computer_folders(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            portrait = root / "portrait"
+            nested = portrait / "artist" / "series" / "chapter" / "selected"
+            wallpaper = root / "wallpaper"
+            nested.mkdir(parents=True)
+            wallpaper.mkdir()
+            Image.new("RGB", (300, 500), "purple").save(nested / "deep.jpg")
+            old = (dict(daily_art.LOCAL_ROOTS), daily_art.MANIFEST_PATH, daily_art.ASSET_DIR)
+            daily_art.LOCAL_ROOTS.clear()
+            daily_art.LOCAL_ROOTS.update({"portrait": portrait, "wallpaper": wallpaper})
+            daily_art.MANIFEST_PATH = root / "manifest.json"
+            daily_art.ASSET_DIR = root / "assets"
+            try:
+                built = daily_art.rebuild_manifest("portrait")
+                self.assertEqual(len(built["items"]), 1)
+                self.assertEqual(Path(built["items"][0]["path"]).name, "deep.jpg")
+                self.assertTrue((daily_art.ASSET_DIR / Path(built["items"][0]["asset"]).name).is_file())
+            finally:
+                daily_art.LOCAL_ROOTS.clear()
+                daily_art.LOCAL_ROOTS.update(old[0])
+                daily_art.MANIFEST_PATH, daily_art.ASSET_DIR = old[1], old[2]
+
     def test_homepage_asset_crops_toward_detected_focus(self):
         source = Image.new("RGB", (400, 200), "blue")
         for x in range(200, 400):

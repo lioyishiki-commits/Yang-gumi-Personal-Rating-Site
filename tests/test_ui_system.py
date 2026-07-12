@@ -77,6 +77,17 @@ class UiSystemTest(unittest.TestCase):
         self.assertIn("filter:none", rule)
         self.assertNotIn("saturate(", rule)
 
+    def test_old_edge_native_form_controls_are_forced_dark(self) -> None:
+        config = copy.deepcopy(settings.DEFAULT_SETTINGS)
+        with patch.object(components.st, "markdown") as markdown:
+            components.inject_css(config)
+        css = markdown.call_args.args[0]
+        self.assertIn("color-scheme:dark!important", css)
+        self.assertIn('[data-testid="stNumberInput"] button', css)
+        self.assertIn('input:not([type="checkbox"]):not([type="radio"])', css)
+        self.assertIn('[data-testid="stExpander"] summary', css)
+        self.assertIn('[data-testid="stFileUploaderDropzone"]', css)
+
     def test_background_renderer_is_fully_disabled(self) -> None:
         page = {
             "background_enabled": True, "background_mode": "auto_poster_blur",

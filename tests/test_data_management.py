@@ -64,6 +64,23 @@ class DataManagementTest(unittest.TestCase):
         self.assertEqual(len(checks), 16)
         self.assertTrue(all(item["ok"] for item in checks))
 
+    def test_uploaded_database_replaces_current_data_after_validation(self) -> None:
+        self._add("导入前")
+        exported = db.backup_database().read_bytes()
+        self._add("导入后新增")
+        self.assertEqual(db.table_counts()["works"], 2)
+
+        db.restore_database(exported)
+
+        self.assertEqual(db.table_counts()["works"], 1)
+        self.assertTrue(any(db.BACKUP_DIR.glob("yanggumi_backup_*.db")))
+        self.assertFalse(any(db.DB_PATH.parent.glob("restore-check-*.db")))
+
+        page_source = Path(__file__).parents[1].joinpath("app.py").read_text(encoding="utf-8")
+        self.assertIn("加载已保存的数据", page_source)
+        self.assertIn('type=["db"]', page_source)
+        self.assertIn("db.restore_database(uploaded_backup.getvalue())", page_source)
+
 
 if __name__ == "__main__":
     unittest.main()

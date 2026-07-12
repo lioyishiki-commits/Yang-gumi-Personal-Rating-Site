@@ -2642,6 +2642,28 @@ def page_data() -> None:
                     st.success(f"恢复成功；恢复前快照：{safety.name}")
                     st.rerun()
                 except Exception as exc: st.error(f"恢复失败：{exc}")
+        st.markdown("#### 加载已保存的数据")
+        uploaded_backup = st.file_uploader(
+            "选择卸载前保存或从其他电脑导出的 Yang-gumi 数据库（.db）",
+            type=["db"],
+            key="load_saved_database",
+            help="导入前会自动为当前数据库建立安全备份。",
+        )
+        load_confirm = st.checkbox(
+            "我确认加载后会以所选备份替换当前数据",
+            key="load_saved_database_confirm",
+        )
+        if st.button(
+            "加载数据",
+            disabled=uploaded_backup is None or not load_confirm,
+            use_container_width=True,
+        ):
+            try:
+                db.restore_database(uploaded_backup.getvalue())
+                st.success("数据加载成功；加载前的数据库已自动保存在 backups 文件夹。")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"数据加载失败：{exc}")
     with right:
         st.subheader("导出")
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")

@@ -50,6 +50,8 @@ MAX_FILE_SIZE = 20 * 1024 * 1024
 MAX_INDEX_ITEMS = 500
 MAX_SAMPLE_ITEMS = 500
 MAX_CACHED_ASSETS = 900
+MAX_SCAN_FILES = 12000
+MAX_SCAN_DEPTH = 12
 TARGET_ASPECTS = {"portrait": 2 / 3, "wallpaper": 16 / 9}
 
 _refresh_lock = threading.Lock()
@@ -164,17 +166,30 @@ def _hour_slot(now: datetime | None = None) -> str:
 
 
 def _iter_shallow(root: Path):
-    """Yield files at the root and one directory below it; never scan a whole disk."""
-    try:
-        children = list(root.iterdir())
-    except OSError:
-        return
-    for child in children:
-        if child.is_file():
-            yield child
-        elif child.is_dir():
+    """Yield files recursively from the folder explicitly selected by the user.
+
+    Image libraries copied from another computer are often grouped several folders
+    deep.  The previous one-level scan silently missed those files.  Traversal stays
+    bounded and never follows directory links, so a mistaken selection cannot turn
+    into an unbounded disk scan.
+    """
+    stack: list[tuple[Path, int]] = [(root, 0)]
+    examined = 0
+    while stack and examined < MAX_SCAN_FILES:
+        current, depth = stack.pop()
+        try:
+            children = list(current.iterdir())
+        except OSError:
+            continue
+        for child in children:
+            if examined >= MAX_SCAN_FILES:
+                break
             try:
-                yield from (nested for nested in child.iterdir() if nested.is_file())
+                if child.is_file():
+                    examined += 1
+                    yield child
+                elif depth < MAX_SCAN_DEPTH and child.is_dir() and not child.is_symlink():
+                    stack.append((child, depth + 1))
             except OSError:
                 continue
 
