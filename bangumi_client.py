@@ -63,7 +63,7 @@ class BangumiError(RuntimeError):
 
 ROOT = Path(__file__).resolve().parent
 RANKING_CACHE_PATH = ROOT / "data" / "bangumi_ranking_cache.json"
-RANKING_CACHE_VERSION = 5
+RANKING_CACHE_VERSION = 7
 _ranking_cache: dict[tuple[str, int, str], tuple[float, list[dict[str, Any]]]] = {}
 _ranking_window_cache: dict[tuple[str, int, int, str], tuple[float, list[dict[str, Any]]]] = {}
 _RANKING_CACHE_SECONDS = 60 * 60
@@ -207,9 +207,10 @@ def _parse_browser_ranking_page(source: str) -> list[dict[str, Any]]:
 
 def _ranking_category_matches(category: str, subject: dict[str, Any]) -> bool:
     source = japanese_source_status(subject)
-    if source == "excluded":
-        return False
-    if category != "动画" and source != "confirmed":
+    # Every public ranking category is Japan-only.  In particular, animation
+    # must not treat an unknown origin as Japanese: Bangumi's type=2 endpoint
+    # also contains Pixar, European and other non-Japanese animation.
+    if source != "confirmed":
         return False
     inferred = infer_local_category(subject, "轻小说" if category == "小说" else category)
     if category == "小说":
@@ -499,9 +500,21 @@ def japanese_source_status(subject: dict[str, Any]) -> str:
     if subject.get("type") not in {1, 2, 4}:
         return "excluded"
     text = _classification_text(subject)
+    tag_names = {
+        str(item.get("name", "") if isinstance(item, dict) else item).strip().casefold()
+        for item in (subject.get("tags") or [])
+    }
+    foreign_origin_tags = {
+        "非日本动画", "非日本動畫", "非日本動畫電影", "欧美", "歐美", "欧洲", "歐洲",
+        "美国", "美國", "以色列", "法国", "法國", "英国", "英國", "韩国", "韓國",
+        "中国", "中國", "国产", "國產", "pixar", "disney", "皮克斯", "迪士尼",
+    }
+    if tag_names & foreign_origin_tags:
+        return "excluded"
     foreign_markers = (
         "中国动画", "国产动画", "国产游戏", "中国游戏", "donghua",
         "美国动画", "欧美动画", "american animation", "韩国漫画", "韩国动画", "webtoon",
+        "非日本动画", "非日本動畫", "pixar", "disney",
         "国家 中国", "地区 中国", "国家/地区 中国", "原产地 中国",
         "国家 美国", "地区 美国", "国家/地区 美国", "原产地 美国",
         "国家 韩国", "地区 韩国", "国家/地区 韩国", "原产地 韩国",
@@ -516,7 +529,10 @@ def japanese_source_status(subject: dict[str, Any]) -> str:
     )
     if any(marker in text for marker in japanese_markers):
         return "confirmed"
-    if any("\u3040" <= char <= "\u30ff" for char in text):
+    # Kana in a translated alias or an incidental user tag does not prove
+    # Japanese origin (for example Pixar's Soul has the alias ソウル).
+    primary_name = str(subject.get("name") or "")
+    if any("\u3040" <= char <= "\u30ff" for char in primary_name):
         return "confirmed"
     # A Japanese work can contain an overseas release note such as
     # "其他上映日期：中国大陆"; that is not the work's country of origin.

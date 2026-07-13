@@ -131,7 +131,7 @@ class BangumiCategoryTest(unittest.TestCase):
                     params={"type": 2, "sort": "rank", "limit": 50, "offset": 0},
                 )
                 disk = bgm._load_ranking_disk_cache(bgm.ranking_quarter_key())
-                self.assertEqual(disk["version"], 5)
+                self.assertEqual(disk["version"], 7)
                 self.assertEqual(disk["categories"]["动画"]["source"], "official-api")
                 self.assertEqual(len(disk["categories"]["动画"]["items"]), 2)
             finally:
@@ -146,7 +146,7 @@ class BangumiCategoryTest(unittest.TestCase):
             "total": 7200,
             "data": [
                 {
-                    "id": 901, "type": 2, "name": "测试动画", "name_cn": "测试动画",
+                    "id": 901, "type": 2, "name": "テストアニメ", "name_cn": "测试动画",
                     "date": "2026-01-01", "platform": "TV", "images": {},
                     "rating": {"rank": 937, "score": 7.0, "total": 100}, "tags": [],
                 }
@@ -167,6 +167,21 @@ class BangumiCategoryTest(unittest.TestCase):
                 bgm.RANKING_CACHE_PATH = original_cache_path
                 bgm._ranking_window_cache.clear()
                 bgm._ranking_window_cache.update(original_memory_cache)
+
+    def test_animation_ranking_requires_confirmed_japanese_origin(self):
+        japanese = {
+            "id": 700, "type": 2, "name": "NARUTO -ナルト- 疾風伝",
+            "name_cn": "火影忍者疾风传", "tags": [], "images": {}, "rating": {},
+        }
+        foreign = [
+            {"id": 697, "type": 2, "name": "Waltz with Bashir", "name_cn": "和巴什尔跳华尔兹", "tags": [{"name": "非日本動畫電影"}, {"name": "アニメ映画"}]},
+            {"id": 701, "type": 2, "name": "Soul", "name_cn": "心灵奇旅", "tags": [{"name": "Pixar"}], "infobox": [{"key": "别名", "value": "ソウル"}]},
+        ]
+        self.assertTrue(bgm._ranking_category_matches("动画", japanese))
+        for subject in foreign:
+            with self.subTest(title=subject["name"]):
+                self.assertNotEqual(bgm.japanese_source_status(subject), "confirmed")
+                self.assertFalse(bgm._ranking_category_matches("动画", subject))
 
     def test_rematching_does_not_overwrite_personal_scores_or_reviews(self):
         original_paths = db.DATA_DIR, db.DB_PATH, db.EXPORT_DIR
