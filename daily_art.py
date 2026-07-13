@@ -46,7 +46,7 @@ def load_source_folders() -> dict[str, Path]:
 LOCAL_ROOTS = load_source_folders()
 REFRESH_QUOTAS = {"portrait": 300, "wallpaper": 60}
 ALLOWED_SUFFIXES = {".jpg", ".jpeg", ".jfif", ".png", ".webp", ".avif", ".bmp", ".gif"}
-MAX_FILE_SIZE = 20 * 1024 * 1024
+MAX_FILE_SIZE = 100 * 1024 * 1024
 MAX_INDEX_ITEMS = 500
 MAX_SAMPLE_ITEMS = 500
 MAX_CACHED_ASSETS = 900
@@ -341,19 +341,23 @@ def rebuild_manifest(only_kind: str | None = None) -> dict[str, Any]:
                 continue
             quota = REFRESH_QUOTAS[kind]
             if not root.exists():
-                scan_stats[kind] = {"files_checked": 0, "supported": 0, "accepted": 0, "unreadable": 0}
+                scan_stats[kind] = {"files_checked": 0, "supported": 0, "accepted": 0, "unreadable": 0, "oversized": 0}
                 continue
             scanned_paths = list(_iter_shallow(root) or [])
             paths = [path for path in scanned_paths if path.suffix.casefold() in ALLOWED_SUFFIXES]
             random.SystemRandom().shuffle(paths)
             accepted = 0
             unreadable = 0
+            oversized = 0
             for path in paths:
                 if accepted >= quota:
                     break
                 try:
                     stat = path.stat()
-                    if stat.st_size <= 0 or stat.st_size > MAX_FILE_SIZE:
+                    if stat.st_size <= 0:
+                        continue
+                    if stat.st_size > MAX_FILE_SIZE:
+                        oversized += 1
                         continue
                     asset_name = _asset_name(path, stat.st_mtime)
                     cached_asset = ASSET_DIR / asset_name
@@ -380,6 +384,7 @@ def rebuild_manifest(only_kind: str | None = None) -> dict[str, Any]:
                 "supported": len(paths),
                 "accepted": accepted,
                 "unreadable": unreadable,
+                "oversized": oversized,
             }
         referenced = {Path(item["asset"]).name for item in entries}
         cached_assets = sorted(
@@ -430,6 +435,7 @@ def _read_manifest(validate: bool = True) -> dict[str, Any]:
                     "supported": int(value.get("supported") or 0),
                     "accepted": int(value.get("accepted") or 0),
                     "unreadable": int(value.get("unreadable") or 0),
+                    "oversized": int(value.get("oversized") or 0),
                 }
                 for key, value in (payload.get("scan_stats") or {}).items()
                 if key in LOCAL_ROOTS and isinstance(value, dict)

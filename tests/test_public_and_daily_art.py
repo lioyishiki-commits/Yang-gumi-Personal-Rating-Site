@@ -67,8 +67,9 @@ class PublicAndDailyArtTest(unittest.TestCase):
             portrait = root / "portrait"; wallpaper = root / "wallpaper"
             portrait.mkdir(); wallpaper.mkdir()
             Image.new("RGB", (300, 500), "red").save(portrait / "ok.jpg")
+            old = (daily_art.LOCAL_ROOTS, daily_art.MANIFEST_PATH, daily_art.ASSET_DIR, daily_art.MAX_FILE_SIZE)
+            daily_art.MAX_FILE_SIZE = (portrait / "ok.jpg").stat().st_size + 128
             (portrait / "too-big.jpg").write_bytes(b"x" * (daily_art.MAX_FILE_SIZE + 1))
-            old = (daily_art.LOCAL_ROOTS, daily_art.MANIFEST_PATH, daily_art.ASSET_DIR)
             daily_art.LOCAL_ROOTS = {"portrait": portrait, "wallpaper": wallpaper}
             daily_art.MANIFEST_PATH = root / "manifest.json"
             daily_art.ASSET_DIR = root / "assets"
@@ -82,8 +83,9 @@ class PublicAndDailyArtTest(unittest.TestCase):
                 self.assertEqual(built["scan_stats"]["portrait"]["files_checked"], 2)
                 self.assertEqual(built["scan_stats"]["portrait"]["supported"], 2)
                 self.assertEqual(built["scan_stats"]["portrait"]["accepted"], 1)
+                self.assertEqual(built["scan_stats"]["portrait"]["oversized"], 1)
             finally:
-                daily_art.LOCAL_ROOTS, daily_art.MANIFEST_PATH, daily_art.ASSET_DIR = old
+                daily_art.LOCAL_ROOTS, daily_art.MANIFEST_PATH, daily_art.ASSET_DIR, daily_art.MAX_FILE_SIZE = old
 
     def test_manifest_finds_images_in_deeply_nested_new_computer_folders(self):
         with tempfile.TemporaryDirectory() as temp:
