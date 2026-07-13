@@ -18,6 +18,7 @@ import requests
 ROOT = Path(__file__).resolve().parent
 SEASONAL_POSTER_ROOT = ROOT / "static" / "seasonal_posters"
 SEASONAL_SOURCE_PATH = ROOT / "data" / "seasonal_title_sources.json"
+MISSING_COVER_REFRESH_PATH = ROOT / "data" / "missing_cover_refresh.json"
 KISSSUB_SCHEDULE_URL = "http://www.kisssub.org/"
 YUC_SEASON_BASE_URL = "https://yuc.wiki"
 KISSSUB_HEADERS = {
@@ -885,6 +886,58 @@ def refresh_current_season_if_due(value: date | datetime | None = None) -> tuple
     return True, refreshed_season, count
 
 
+def refresh_missing_anime_covers() -> int:
+    """Fill only empty anime covers from the corresponding Bangumi subject."""
+    updated = 0
+    for work in db.list_works():
+        if work.get("type") != "动画":
+            continue
+        if any(str(work.get(key) or "").strip() for key in ("bangumi_image_url", "cover_url", "cover_path")):
+            continue
+        subject = None
+        subject_id = work.get("bangumi_id")
+        if subject_id:
+            try:
+                subject = bgm.get_subject(int(subject_id))
+            except Exception:
+                continue
+        else:
+            title = str(work.get("title") or work.get("original_title") or "").strip()
+            if not title:
+                continue
+            try:
+                candidates = bgm.search_subjects_by_category(title, "动画", limit=10)
+            except Exception:
+                continue
+            normalized_title = bgm.normalize_title(title)
+            subject = next((candidate for candidate in candidates if normalized_title and normalized_title in {
+                bgm.normalize_title(candidate.get("name")), bgm.normalize_title(candidate.get("name_cn")),
+            }), None)
+        if not subject or bgm.japanese_source_status(subject) != "confirmed":
+            continue
+        image_url = bgm.normalize_subject(subject).get("bangumi_image_url") or ""
+        if not image_url:
+            continue
+        db.update_bangumi(int(work["id"]), {"bangumi_image_url": image_url}, include_local_titles=False)
+        updated += 1
+    MISSING_COVER_REFRESH_PATH.parent.mkdir(parents=True, exist_ok=True)
+    MISSING_COVER_REFRESH_PATH.write_text(json.dumps({
+        "date": datetime.now().date().isoformat(), "updated": updated,
+        "finished_at": datetime.now().isoformat(timespec="seconds"),
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    return updated
+
+
+def refresh_missing_anime_covers_if_due(value: date | datetime | None = None) -> tuple[bool, int]:
+    today = (value or datetime.now()).date().isoformat()
+    try:
+        if json.loads(MISSING_COVER_REFRESH_PATH.read_text(encoding="utf-8")).get("date") == today:
+            return False, 0
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        pass
+    return True, refresh_missing_anime_covers()
+
+
 def _midnight_refresh_scheduler() -> None:
     while True:
         now = datetime.now()
@@ -893,7 +946,11 @@ def _midnight_refresh_scheduler() -> None:
         try:
             refresh_current_season_if_due(datetime.now())
         except Exception:
-            continue
+            pass
+        try:
+            refresh_missing_anime_covers_if_due(datetime.now())
+        except Exception:
+            pass
 
 
 def start_midnight_refresh_scheduler() -> None:
@@ -903,6 +960,10 @@ def start_midnight_refresh_scheduler() -> None:
         if _scheduler_started:
             return
         _scheduler_started = True
+        threading.Thread(
+            target=lambda: refresh_missing_anime_covers_if_due(datetime.now()),
+            name="yanggumi-cover-catchup", daemon=True,
+        ).start()
         threading.Thread(target=_midnight_refresh_scheduler, name="yanggumi-season-midnight", daemon=True).start()
 
 
