@@ -10,6 +10,8 @@ $Temp = Join-Path $env:TEMP ('yanggumi-github-' + [Guid]::NewGuid().ToString('N'
 $Zip = Join-Path $Temp 'patch.zip'
 $Extract = Join-Path $Temp 'source'
 $ImageExtensions = @('.jpg', '.jpeg', '.jfif', '.png', '.webp', '.avif', '.bmp', '.gif')
+$PortraitNames = @(([string][char]0x7AD6 + [char]0x5C4F), ([string][char]0x7AD6 + [char]0x56FE), 'Portrait', 'portrait')
+$WallpaperNames = @(([string][char]0x58C1 + [char]0x7EB8), 'Wallpaper', 'wallpaper')
 
 function Write-Json($Path, $Value) {
     [IO.File]::WriteAllText($Path, ($Value | ConvertTo-Json -Depth 8), (New-Object Text.UTF8Encoding($false)))
@@ -52,6 +54,12 @@ try {
     $Old = $Candidates | Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'data\acgn.db') } |
         Sort-Object LastWriteTime -Descending | Select-Object -First 1
 
+    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.Name -in @('python.exe', 'pythonw.exe', 'py.exe') -and $_.CommandLine -and
+        ($_.CommandLine.Contains($Target) -or ($_.CommandLine -match 'streamlit\s+run' -and $_.CommandLine -match '8501'))
+    } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    Start-Sleep -Seconds 2
+
     if (Test-Path -LiteralPath $Target) {
         $Backup = "$Target-backup-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
         Move-Item -LiteralPath $Target -Destination $Backup
@@ -75,8 +83,8 @@ try {
         $Result.old_install = $OldPath
     }
 
-    $Portrait = Local-Image-Folder @('竖屏', '竖图', 'Portrait', 'portrait')
-    $Wallpaper = Local-Image-Folder @('壁纸', 'Wallpaper', 'wallpaper')
+    $Portrait = Local-Image-Folder $PortraitNames
+    $Wallpaper = Local-Image-Folder $WallpaperNames
     $Settings = [ordered]@{}
     if ($Portrait) { $Settings.portrait = $Portrait }
     if ($Wallpaper) { $Settings.wallpaper = $Wallpaper }
