@@ -45,9 +45,9 @@ try {
 
     $Roots = @($Desktop, (Join-Path $env:USERPROFILE 'Downloads')) | Where-Object { Test-Path -LiteralPath $_ }
     $Candidates = foreach ($Root in $Roots) {
-        Get-ChildItem -LiteralPath $Root -Directory -ErrorAction SilentlyContinue | Where-Object {
-            $_.FullName -ne $Target -and (Test-Path -LiteralPath (Join-Path $_.FullName 'app.py'))
-        }
+        $Top = @(Get-ChildItem -LiteralPath $Root -Directory -ErrorAction SilentlyContinue)
+        $Top + @($Top | ForEach-Object { Get-ChildItem -LiteralPath $_.FullName -Directory -ErrorAction SilentlyContinue }) |
+            Where-Object { $_.FullName -ne $Target -and (Test-Path -LiteralPath (Join-Path $_.FullName 'app.py')) }
     }
     $Old = $Candidates | Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'data\acgn.db') } |
         Sort-Object LastWriteTime -Descending | Select-Object -First 1
@@ -95,6 +95,11 @@ try {
         (Get-Content -LiteralPath $_.FullName -Raw) -match 'pip install -r requirements\.txt'
     } | Select-Object -First 1
     if (-not $Launcher) { throw 'Yang-gumi launcher is missing.' }
+    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.Name -in @('python.exe', 'pythonw.exe', 'py.exe') -and $_.CommandLine -and
+        $_.CommandLine -match 'streamlit\s+run' -and $_.CommandLine -match '8501'
+    } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    Start-Sleep -Seconds 2
     Start-Process -FilePath $Launcher.FullName -WorkingDirectory $Target -WindowStyle Hidden
 
     $Deadline = (Get-Date).AddMinutes(10)
