@@ -1154,6 +1154,16 @@ def render_daily_art() -> None:
 
         if not active_source:
             st.markdown('<div class="yg-art-empty">今日美图索引为空 · 点击重新扫描图片建立本地索引</div>', unsafe_allow_html=True)
+            scan_stats = manifest.get("scan_stats") or {}
+            if scan_stats:
+                checked = sum(int(value.get("files_checked") or 0) for value in scan_stats.values())
+                supported = sum(int(value.get("supported") or 0) for value in scan_stats.values())
+                accepted = sum(int(value.get("accepted") or 0) for value in scan_stats.values())
+                unreadable = sum(int(value.get("unreadable") or 0) for value in scan_stats.values())
+                st.caption(
+                    f"最近扫描：检查 {checked} 个文件 · 识别图片 {supported} 张 · "
+                    f"已生成 {accepted} 张 · 无法读取 {unreadable} 张"
+                )
             if st.button("重新扫描图片", key="daily_art_rescan_empty", use_container_width=True):
                 if _block_readonly_action():
                     _readonly_notice()

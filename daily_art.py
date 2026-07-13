@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parent
 MANIFEST_PATH = ROOT / "data" / "image_manifest.json"
 SETTINGS_PATH = ROOT / "data" / "daily_art_settings.json"
 ASSET_DIR = ROOT / "static" / "daily_art"
-MANIFEST_VERSION = 8
+MANIFEST_VERSION = 9
 DEFAULT_LOCAL_ROOTS = {
     "portrait": Path(
         os.getenv("YANGGUMI_PORTRAIT_DIR")
@@ -45,7 +45,7 @@ def load_source_folders() -> dict[str, Path]:
 
 LOCAL_ROOTS = load_source_folders()
 REFRESH_QUOTAS = {"portrait": 300, "wallpaper": 60}
-ALLOWED_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
+ALLOWED_SUFFIXES = {".jpg", ".jpeg", ".jfif", ".png", ".webp", ".avif", ".bmp", ".gif"}
 MAX_FILE_SIZE = 20 * 1024 * 1024
 MAX_INDEX_ITEMS = 500
 MAX_SAMPLE_ITEMS = 500
@@ -313,9 +313,21 @@ def rebuild_manifest(only_kind: str | None = None) -> dict[str, Any]:
         MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
         ASSET_DIR.mkdir(parents=True, exist_ok=True)
         entries: list[dict[str, Any]] = []
+        scan_stats: dict[str, dict[str, int]] = {}
+        previous: dict[str, Any] = {}
         if only_kind is not None:
             try:
                 previous = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+                scan_stats.update({
+                    key: {
+                        "files_checked": int(value.get("files_checked") or 0),
+                        "supported": int(value.get("supported") or 0),
+                        "accepted": int(value.get("accepted") or 0),
+                        "unreadable": int(value.get("unreadable") or 0),
+                    }
+                    for key, value in (previous.get("scan_stats") or {}).items()
+                    if key in LOCAL_ROOTS and isinstance(value, dict)
+                })
                 for item in previous.get("items", [])[:MAX_INDEX_ITEMS]:
                     if item.get("type") == only_kind or item.get("type") not in LOCAL_ROOTS:
                         continue
@@ -329,10 +341,13 @@ def rebuild_manifest(only_kind: str | None = None) -> dict[str, Any]:
                 continue
             quota = REFRESH_QUOTAS[kind]
             if not root.exists():
+                scan_stats[kind] = {"files_checked": 0, "supported": 0, "accepted": 0, "unreadable": 0}
                 continue
-            paths = [path for path in (_iter_shallow(root) or []) if path.suffix.casefold() in ALLOWED_SUFFIXES]
+            scanned_paths = list(_iter_shallow(root) or [])
+            paths = [path for path in scanned_paths if path.suffix.casefold() in ALLOWED_SUFFIXES]
             random.SystemRandom().shuffle(paths)
             accepted = 0
+            unreadable = 0
             for path in paths:
                 if accepted >= quota:
                     break
@@ -347,10 +362,6 @@ def rebuild_manifest(only_kind: str | None = None) -> dict[str, Any]:
                     with Image.open(path) as source:
                         image = ImageOps.exif_transpose(source).convert("RGB")
                         width, height = image.size
-                        if kind == "portrait" and height < width * 1.08:
-                            continue
-                        if kind == "wallpaper" and width < height * 1.18:
-                            continue
                         focus = _focus_position(_trim_plain_border(image))
                         if not cached_asset.exists():
                             asset_image = _homepage_asset(image, kind, focus)
@@ -362,7 +373,14 @@ def rebuild_manifest(only_kind: str | None = None) -> dict[str, Any]:
                     })
                     accepted += 1
                 except (OSError, ValueError, Image.DecompressionBombError):
+                    unreadable += 1
                     continue
+            scan_stats[kind] = {
+                "files_checked": len(scanned_paths),
+                "supported": len(paths),
+                "accepted": accepted,
+                "unreadable": unreadable,
+            }
         referenced = {Path(item["asset"]).name for item in entries}
         cached_assets = sorted(
             ASSET_DIR.glob("*.webp"), key=lambda item: item.stat().st_mtime, reverse=True
@@ -376,6 +394,7 @@ def rebuild_manifest(only_kind: str | None = None) -> dict[str, Any]:
             "version": MANIFEST_VERSION,
             "updated_at": now.isoformat(timespec="seconds"),
             "refresh_slot": _hour_slot(now),
+            "scan_stats": scan_stats,
             "items": entries,
         }
         temporary = MANIFEST_PATH.with_suffix(".tmp")
@@ -405,10 +424,20 @@ def _read_manifest(validate: bool = True) -> dict[str, Any]:
             "version": int(payload.get("version") or 0),
             "updated_at": payload.get("updated_at"),
             "refresh_slot": payload.get("refresh_slot"),
+            "scan_stats": {
+                key: {
+                    "files_checked": int(value.get("files_checked") or 0),
+                    "supported": int(value.get("supported") or 0),
+                    "accepted": int(value.get("accepted") or 0),
+                    "unreadable": int(value.get("unreadable") or 0),
+                }
+                for key, value in (payload.get("scan_stats") or {}).items()
+                if key in LOCAL_ROOTS and isinstance(value, dict)
+            },
             "items": items,
         }
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
-        return {"version": 0, "updated_at": None, "refresh_slot": None, "items": []}
+        return {"version": 0, "updated_at": None, "refresh_slot": None, "scan_stats": {}, "items": []}
 
 
 def _refresh_if_stale() -> None:

@@ -79,6 +79,9 @@ class PublicAndDailyArtTest(unittest.TestCase):
                 self.assertEqual(len(loaded["items"]), 1)
                 self.assertEqual(loaded["items"][0]["type"], "portrait")
                 self.assertIn("refresh_slot", built)
+                self.assertEqual(built["scan_stats"]["portrait"]["files_checked"], 2)
+                self.assertEqual(built["scan_stats"]["portrait"]["supported"], 2)
+                self.assertEqual(built["scan_stats"]["portrait"]["accepted"], 1)
             finally:
                 daily_art.LOCAL_ROOTS, daily_art.MANIFEST_PATH, daily_art.ASSET_DIR = old
 
@@ -101,6 +104,33 @@ class PublicAndDailyArtTest(unittest.TestCase):
                 self.assertEqual(len(built["items"]), 1)
                 self.assertEqual(Path(built["items"][0]["path"]).name, "deep.jpg")
                 self.assertTrue((daily_art.ASSET_DIR / Path(built["items"][0]["asset"]).name).is_file())
+            finally:
+                daily_art.LOCAL_ROOTS.clear()
+                daily_art.LOCAL_ROOTS.update(old[0])
+                daily_art.MANIFEST_PATH, daily_art.ASSET_DIR = old[1], old[2]
+
+    def test_selected_folder_accepts_supported_images_regardless_of_orientation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            portrait = root / "portrait"; wallpaper = root / "wallpaper"
+            portrait.mkdir(); wallpaper.mkdir()
+            Image.new("RGB", (900, 400), "orange").save(portrait / "wide-in-portrait.bmp")
+            Image.new("RGB", (400, 900), "cyan").save(wallpaper / "tall-in-wallpaper.gif")
+            old = (dict(daily_art.LOCAL_ROOTS), daily_art.MANIFEST_PATH, daily_art.ASSET_DIR)
+            daily_art.LOCAL_ROOTS.clear()
+            daily_art.LOCAL_ROOTS.update({"portrait": portrait, "wallpaper": wallpaper})
+            daily_art.MANIFEST_PATH = root / "manifest.json"
+            daily_art.ASSET_DIR = root / "assets"
+            try:
+                built = daily_art.rebuild_manifest()
+                self.assertEqual({item["type"] for item in built["items"]}, {"portrait", "wallpaper"})
+                sizes = {}
+                for item in built["items"]:
+                    with Image.open(daily_art.ASSET_DIR / Path(item["asset"]).name) as image:
+                        sizes[item["type"]] = image.size
+                self.assertEqual(sizes, {"portrait": (720, 1080), "wallpaper": (1280, 720)})
+                self.assertEqual(built["scan_stats"]["portrait"]["accepted"], 1)
+                self.assertEqual(built["scan_stats"]["wallpaper"]["accepted"], 1)
             finally:
                 daily_art.LOCAL_ROOTS.clear()
                 daily_art.LOCAL_ROOTS.update(old[0])

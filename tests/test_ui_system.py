@@ -87,6 +87,14 @@ class UiSystemTest(unittest.TestCase):
         self.assertIn('input:not([type="checkbox"]):not([type="radio"])', css)
         self.assertIn('[data-testid="stExpander"] summary', css)
         self.assertIn('[data-testid="stFileUploaderDropzone"]', css)
+        self.assertIn('[data-testid="stBaseButton-segmented_control"]', css)
+        self.assertIn('[data-testid="stBaseButton-segmented_controlActive"]', css)
+        segmented_rule = next(
+            rule for rule in css.split("}")
+            if '[data-testid="stBaseButton-segmented_control"]' in rule and ":hover" not in rule
+        )
+        self.assertIn("background:#0e1117!important", segmented_rule)
+        self.assertIn("-webkit-text-fill-color:#e7e7e9!important", segmented_rule)
 
     def test_background_renderer_is_fully_disabled(self) -> None:
         page = {
