@@ -1047,6 +1047,9 @@ def render_seasonal_anime_panel(works: list[dict[str, Any]]) -> None:
 
 def render_daily_art() -> None:
     manifest = daily_art.load_manifest()
+    if manifest.get("version") != daily_art.MANIFEST_VERSION and not _block_readonly_action():
+        with st.spinner("正在升级今日美图索引并查找可用图片目录…"):
+            manifest = daily_art.rebuild_manifest()
     refreshing_art = daily_art.refresh_manifest_async_if_needed(manifest)
     portraits = daily_art.browser_candidates(manifest["items"], "portrait")
     wallpapers = daily_art.browser_candidates(manifest["items"], "wallpaper")
@@ -1118,7 +1121,16 @@ def render_daily_art() -> None:
             return
         label = "竖屏" if kind == "portrait" else "壁纸"
         with st.spinner(f"正在建立{label}美图索引…"):
-            daily_art.rebuild_manifest(kind)
+            rebuilt = daily_art.rebuild_manifest(kind)
+        stats = (rebuilt.get("scan_stats") or {}).get(kind) or {}
+        st.session_state.daily_art_last_scan = {
+            "kind": label,
+            "folder": str((rebuilt.get("source_folders") or {}).get(kind) or selected),
+            "files_checked": int(stats.get("files_checked") or 0),
+            "supported": int(stats.get("supported") or 0),
+            "accepted": int(stats.get("accepted") or 0),
+            "unreadable": int(stats.get("unreadable") or 0),
+        }
         st.session_state.daily_art_kind = kind
         st.session_state.daily_art_pick = []
         st.session_state.pop(f"daily_art_recent_{kind}", None)
@@ -1152,6 +1164,26 @@ def render_daily_art() -> None:
                 choose_art()
                 st.rerun()
 
+        source_folders = manifest.get("source_folders") or {
+            key: str(value) for key, value in daily_art.load_source_folders().items()
+        }
+        st.caption(
+            f"竖屏目录：{source_folders.get('portrait') or '未设置'}　｜　"
+            f"壁纸目录：{source_folders.get('wallpaper') or '未设置'}"
+        )
+        last_scan = st.session_state.get("daily_art_last_scan") or {}
+        if last_scan:
+            message = (
+                f"{last_scan.get('kind')}目录已设置：{last_scan.get('folder')} · "
+                f"检查 {last_scan.get('files_checked', 0)} 个文件 · "
+                f"识别 {last_scan.get('supported', 0)} 张图片 · "
+                f"成功生成 {last_scan.get('accepted', 0)} 张"
+            )
+            if int(last_scan.get("accepted") or 0) > 0:
+                st.success(message)
+            else:
+                st.error(message + "。该目录没有可读取的图片；程序会继续尝试桌面、图片库和 VMware 共享图片目录。")
+
         if not active_source:
             st.markdown('<div class="yg-art-empty">今日美图索引为空 · 点击重新扫描图片建立本地索引</div>', unsafe_allow_html=True)
             scan_stats = manifest.get("scan_stats") or {}
@@ -1169,7 +1201,17 @@ def render_daily_art() -> None:
                     _readonly_notice()
                     return
                 with st.spinner("正在从竖屏与壁纸图库重新选取并压缩本地图片索引…"):
-                    daily_art.rebuild_manifest()
+                    rebuilt = daily_art.rebuild_manifest()
+                stats = rebuilt.get("scan_stats") or {}
+                accepted = sum(int(value.get("accepted") or 0) for value in stats.values())
+                st.session_state.daily_art_last_scan = {
+                    "kind": "全部美图",
+                    "folder": "；".join(str(value) for value in (rebuilt.get("source_folders") or {}).values()),
+                    "files_checked": sum(int(value.get("files_checked") or 0) for value in stats.values()),
+                    "supported": sum(int(value.get("supported") or 0) for value in stats.values()),
+                    "accepted": accepted,
+                    "unreadable": sum(int(value.get("unreadable") or 0) for value in stats.values()),
+                }
                 st.rerun()
             return
 
@@ -1219,7 +1261,16 @@ def render_daily_art() -> None:
                 _readonly_notice()
                 return
             with st.spinner("正在从竖屏与壁纸图库重新选取并压缩本地图片索引…"):
-                daily_art.rebuild_manifest()
+                rebuilt = daily_art.rebuild_manifest()
+            stats = rebuilt.get("scan_stats") or {}
+            st.session_state.daily_art_last_scan = {
+                "kind": "全部美图",
+                "folder": "；".join(str(value) for value in (rebuilt.get("source_folders") or {}).values()),
+                "files_checked": sum(int(value.get("files_checked") or 0) for value in stats.values()),
+                "supported": sum(int(value.get("supported") or 0) for value in stats.values()),
+                "accepted": sum(int(value.get("accepted") or 0) for value in stats.values()),
+                "unreadable": sum(int(value.get("unreadable") or 0) for value in stats.values()),
+            }
             st.rerun()
 
 
@@ -1883,10 +1934,10 @@ def render_bangumi_ranking_browser() -> None:
     max_rank_page = max(1, (ranking_capacity + page_size - 1) // page_size)
     page = max(1, min(max_rank_page, int(st.session_state.get("bangumi_rank_page", 1))))
     source_links = {
-        "动画": "https://bgm.tv/anime/browser/日本?sort=rank",
-        "漫画": "https://bgm.tv/book/browser/?sort=rank",
-        "小说": "https://bgm.tv/book/browser/?sort=rank",
-        "游戏": "https://bgm.tv/game/browser?sort=rank",
+        "动画": "https://api.bgm.tv/v0/subjects?type=2&sort=rank",
+        "漫画": "https://api.bgm.tv/v0/subjects?type=1&cat=1001&sort=rank",
+        "小说": "https://api.bgm.tv/v0/subjects?type=1&cat=1002&sort=rank",
+        "游戏": "https://api.bgm.tv/v0/subjects?type=4&cat=4001&sort=rank",
     }
     st.caption(f"数据源 · {source_links[category]} · 当前季度缓存 {bgm.ranking_quarter_key()} · 操作按钮会写入 Yang-gumi 本地评分库")
     load_key = f"_bangumi_rank_load_{category}"

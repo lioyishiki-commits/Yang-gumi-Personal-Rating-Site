@@ -357,7 +357,7 @@ Bangumi 页面读取 Bangumi 公开条目搜索和公开排行榜。它不要求
 
 # **6. 今日美图：本地图库、裁切、刷新与随机**
 
-今日美图只读取你的本地图片。开源仓库不会附带作者图库。新电脑默认从用户主目录下的 Pictures/Yang-gumi/Portrait 与 Pictures/Yang-gumi/Wallpaper 读取；如果目录不存在或为空，首页会显示空状态或提示重新选择。
+今日美图只读取你明确选择或本机可发现的图片目录。开源仓库不会附带作者图库。新电脑默认从用户主目录下的 Pictures/Yang-gumi/Portrait 与 Pictures/Yang-gumi/Wallpaper 读取；若目录不存在或为空，程序会继续检查桌面、图片库、OneDrive，以及 VMware 的 `YangGumiPortrait`、`YangGumiWallpaper` 只读共享目录。首页会显示最终使用的实际路径和扫描统计。
 
 | **类别** | **默认目录**                       | **环境变量**               |
 | ------ | ------------------------------ | ---------------------- |
@@ -378,7 +378,7 @@ Bangumi 页面读取 Bangumi 公开条目搜索和公开排行榜。它不要求
 | 清单最大项目   | 500                     |
 | 浏览候选抽样   | 500                     |
 | 本地缓存资产上限 | 900                     |
-| 清单格式版本   | version 9               |
+| 清单格式版本   | version 10              |
 
 ## **6.2 图片判定与生成尺寸**
 
@@ -479,7 +479,7 @@ Bangumi 页面读取 Bangumi 公开条目搜索和公开排行榜。它不要求
 
 # **8. Bangumi 搜索与公开排行榜**
 
-Bangumi 功能分为两类：公开条目搜索和公开排行榜抓取。它们都只读取公开数据，不需要用户账号，不会修改外部网站。
+Bangumi 功能分为两类：公开条目搜索和公开排行榜读取。它们都通过官方公开 API，只读取公开数据，不需要用户账号，不会修改外部网站。排行榜不再解析容易变化的网页 HTML。
 
 ## **8.1 搜索接口**
 
@@ -499,9 +499,10 @@ Bangumi 功能分为两类：公开条目搜索和公开排行榜抓取。它们
 
 | **分类** | **公开页面**                                                                                                               |
 | ------ | ---------------------------------------------------------------------------------------------------------------------- |
-| 动画     | [https://bgm.tv/anime/browser/%E6%97%A5%E6%9C%AC?sort=rank](https://bgm.tv/anime/browser/%E6%97%A5%E6%9C%AC?sort=rank) |
-| 漫画/小说  | [https://bgm.tv/book/browser/?sort=rank](https://bgm.tv/book/browser/?sort=rank)                                       |
-| 游戏     | [https://bgm.tv/game/browser?sort=rank](https://bgm.tv/game/browser?sort=rank)                                         |
+| 动画     | [https://api.bgm.tv/v0/subjects?type=2&sort=rank](https://api.bgm.tv/v0/subjects?type=2&sort=rank) |
+| 漫画     | [https://api.bgm.tv/v0/subjects?type=1&cat=1001&sort=rank](https://api.bgm.tv/v0/subjects?type=1&cat=1001&sort=rank) |
+| 小说     | [https://api.bgm.tv/v0/subjects?type=1&cat=1002&sort=rank](https://api.bgm.tv/v0/subjects?type=1&cat=1002&sort=rank) |
+| 游戏     | [https://api.bgm.tv/v0/subjects?type=4&cat=4001&sort=rank](https://api.bgm.tv/v0/subjects?type=4&cat=4001&sort=rank) |
 
 | **缓存与抓取参数** | **值**                                 |
 | ----------- | ------------------------------------- |
@@ -665,7 +666,7 @@ SQLite 备份使用 SQLite 在线 backup API，时间戳精确到微秒。备份
 | 依赖安装失败                | 检查网络、pip 源和 requirements.txt；必要时删除 .venv 后重新运行安装脚本。  |
 | 浏览器打不开 127.0.0.1:8501 | 等待启动健康检查完成；若仍失败，查看启动窗口和 logs/app_errors.log。         |
 | 新电脑出现白边或白框           | 先更新 Edge 并重启网站。程序已强制控件深色；旧 Edge 仍异常时安装 Dark Reader（扩展 ID `eimadpbcbfnmbkopoojfekhnkhdbieeh`），仅对 `127.0.0.1:8501` 启用并固定深色。 |
-| 今日美图为空                | 确认所选目录及多级子目录中有 JPG/JPEG/JFIF/PNG/WebP/AVIF/BMP/GIF；点击“竖屏”“壁纸”重新选择目录，再点击“重新扫描图片”。页面会显示最近检查、识别、生成和无法读取的数量，便于判断目录或文件问题。 |
+| 今日美图为空                | 确认所选目录及多级子目录中有 JPG/JPEG/JFIF/PNG/WebP/AVIF/BMP/GIF；点击“竖屏”“壁纸”重新选择目录，再点击“重新扫描图片”。页面会显示实际目录、检查、识别、生成和无法读取数量；所选目录为空时还会自动检查桌面、图片库、OneDrive 和 VMware 共享图片目录。 |
 | 换一组不换图                | 可能候选太少或最近 30 个 key 防重复限制；增加图库后重建索引。                  |
 | Bangumi 搜索失败          | 检查网络；公开 API 或网页临时异常时稍后重试。                            |
 | 季度新番缺图                | 等待海报缓存补全；远程图失败时本地缓存会兜底。                              |
@@ -759,7 +760,7 @@ python -m unittest discover tests
 | 清单最大     | 500                            |
 | 浏览候选抽样   | 500                            |
 | 本地缓存资产上限 | 900                            |
-| 清单版本     | version 9                      |
+| 清单版本     | version 10                     |
 | 竖屏输出     | 720 × 1080                     |
 | 壁纸输出     | 1280 × 720                     |
 | 壁纸概率     | 10%                            |
@@ -806,9 +807,10 @@ python -m unittest discover tests
 | 项目仓库         | [https://github.com/lioyishiki-commits/Yang-gumi-Personal-Rating-Site](https://github.com/lioyishiki-commits/Yang-gumi-Personal-Rating-Site) | 下载 ZIP、查看源码、提交 issue 或二次开发。 |
 | Bangumi API  | [https://api.bgm.tv/v0](https://api.bgm.tv/v0)                                                                                               | 公开 API。                     |
 | Bangumi 条目页  | [https://bgm.tv/subject/{id}](https://bgm.tv/subject/{id})                                                                                   | 公开条目详情兜底。                   |
-| Bangumi 动画排行 | [https://bgm.tv/anime/browser/%E6%97%A5%E6%9C%AC?sort=rank](https://bgm.tv/anime/browser/%E6%97%A5%E6%9C%AC?sort=rank)                       | 动画公开排行榜。                    |
-| Bangumi 书籍排行 | [https://bgm.tv/book/browser/?sort=rank](https://bgm.tv/book/browser/?sort=rank)                                                             | 漫画/小说公开排行榜。                 |
-| Bangumi 游戏排行 | [https://bgm.tv/game/browser?sort=rank](https://bgm.tv/game/browser?sort=rank)                                                               | 游戏公开排行榜。                    |
+| Bangumi 动画排行 | [https://api.bgm.tv/v0/subjects?type=2&sort=rank](https://api.bgm.tv/v0/subjects?type=2&sort=rank) | 官方动画排行榜 API。 |
+| Bangumi 漫画排行 | [https://api.bgm.tv/v0/subjects?type=1&cat=1001&sort=rank](https://api.bgm.tv/v0/subjects?type=1&cat=1001&sort=rank) | 官方漫画排行榜 API。 |
+| Bangumi 小说排行 | [https://api.bgm.tv/v0/subjects?type=1&cat=1002&sort=rank](https://api.bgm.tv/v0/subjects?type=1&cat=1002&sort=rank) | 官方小说排行榜 API。 |
+| Bangumi 游戏排行 | [https://api.bgm.tv/v0/subjects?type=4&cat=4001&sort=rank](https://api.bgm.tv/v0/subjects?type=4&cat=4001&sort=rank) | 官方游戏排行榜 API。 |
 | KissSub      | [http://www.kisssub.org/](http://www.kisssub.org/)                                                                                           | 季度新番标题与排期参考。                |
 | YUC Wiki     | [https://yuc.wiki/{YYYY}{MM}/](https://yuc.wiki/{YYYY}{MM}/)                                                                                 | 季度新番排期页面。                   |
 

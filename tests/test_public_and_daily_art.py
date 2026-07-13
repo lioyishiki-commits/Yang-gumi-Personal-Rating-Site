@@ -109,6 +109,34 @@ class PublicAndDailyArtTest(unittest.TestCase):
                 daily_art.LOCAL_ROOTS.update(old[0])
                 daily_art.MANIFEST_PATH, daily_art.ASSET_DIR = old[1], old[2]
 
+    def test_empty_configured_folder_auto_discovers_unicode_desktop_library(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            configured = root / "empty-portrait"
+            discovered = root / "桌面" / "竖屏"
+            wallpaper = root / "wallpaper"
+            configured.mkdir(); discovered.mkdir(parents=True); wallpaper.mkdir()
+            Image.new("RGB", (500, 800), "magenta").save(discovered / "美图.png")
+            old = (
+                dict(daily_art.LOCAL_ROOTS), daily_art.MANIFEST_PATH,
+                daily_art.SETTINGS_PATH, daily_art.ASSET_DIR,
+            )
+            daily_art.LOCAL_ROOTS.clear()
+            daily_art.LOCAL_ROOTS.update({"portrait": configured, "wallpaper": wallpaper})
+            daily_art.MANIFEST_PATH = root / "manifest.json"
+            daily_art.SETTINGS_PATH = root / "settings.json"
+            daily_art.ASSET_DIR = root / "assets"
+            try:
+                with mock.patch.object(daily_art, "_automatic_source_candidates", return_value=[discovered]):
+                    built = daily_art.rebuild_manifest("portrait")
+                self.assertEqual(built["scan_stats"]["portrait"]["accepted"], 1)
+                self.assertEqual(Path(built["source_folders"]["portrait"]), discovered)
+                self.assertEqual(daily_art.load_source_folders()["portrait"], discovered)
+            finally:
+                daily_art.LOCAL_ROOTS.clear()
+                daily_art.LOCAL_ROOTS.update(old[0])
+                daily_art.MANIFEST_PATH, daily_art.SETTINGS_PATH, daily_art.ASSET_DIR = old[1:]
+
     def test_selected_folder_accepts_supported_images_regardless_of_orientation(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

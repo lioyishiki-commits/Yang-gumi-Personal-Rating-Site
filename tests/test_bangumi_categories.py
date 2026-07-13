@@ -101,6 +101,44 @@ class BangumiCategoryTest(unittest.TestCase):
                 bgm._ranking_cache.clear()
                 bgm._ranking_cache.update(original_memory_cache)
 
+    def test_ranking_uses_official_subjects_api_and_persists_results(self):
+        original_cache_path = bgm.RANKING_CACHE_PATH
+        original_memory_cache = dict(bgm._ranking_cache)
+        payload = {
+            "total": 2,
+            "data": [
+                {
+                    "id": 101, "type": 2, "name": "テストアニメ", "name_cn": "测试动画",
+                    "date": "2026-01-01", "platform": "TV", "images": {"large": "https://img/101.jpg"},
+                    "rating": {"rank": 1, "score": 9.1, "total": 1234}, "tags": [],
+                },
+                {
+                    "id": 102, "type": 2, "name": "テストアニメ二", "name_cn": "测试动画二",
+                    "date": "2026-01-02", "platform": "TV", "images": {},
+                    "rating": {"rank": 2, "score": 9.0, "total": 1000}, "tags": [],
+                },
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bgm.RANKING_CACHE_PATH = Path(temp_dir) / "ranking-cache.json"
+            bgm._ranking_cache.clear()
+            try:
+                with patch.object(bgm, "_request", return_value=payload) as request:
+                    rows = bgm.ranked_browser_subjects("动画", 2)
+                self.assertEqual([row["id"] for row in rows], [101, 102])
+                request.assert_called_once_with(
+                    "GET", "/subjects",
+                    params={"type": 2, "sort": "rank", "limit": 50, "offset": 0},
+                )
+                disk = bgm._load_ranking_disk_cache(bgm.ranking_quarter_key())
+                self.assertEqual(disk["version"], 4)
+                self.assertEqual(disk["categories"]["动画"]["source"], "official-api")
+                self.assertEqual(len(disk["categories"]["动画"]["items"]), 2)
+            finally:
+                bgm.RANKING_CACHE_PATH = original_cache_path
+                bgm._ranking_cache.clear()
+                bgm._ranking_cache.update(original_memory_cache)
+
     def test_rematching_does_not_overwrite_personal_scores_or_reviews(self):
         original_paths = db.DATA_DIR, db.DB_PATH, db.EXPORT_DIR
         with tempfile.TemporaryDirectory() as temp_dir:
