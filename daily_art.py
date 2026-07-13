@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parent
 MANIFEST_PATH = ROOT / "data" / "image_manifest.json"
 SETTINGS_PATH = ROOT / "data" / "daily_art_settings.json"
 ASSET_DIR = ROOT / "static" / "daily_art"
-MANIFEST_VERSION = 10
+MANIFEST_VERSION = 9
 DEFAULT_LOCAL_ROOTS = {
     "portrait": Path(
         os.getenv("YANGGUMI_PORTRAIT_DIR")
@@ -59,16 +59,6 @@ _scheduler_lock = threading.Lock()
 _scheduler_started = False
 
 
-def _save_source_folders(roots: dict[str, Path]) -> None:
-    SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    temporary = SETTINGS_PATH.with_suffix(".tmp")
-    temporary.write_text(
-        json.dumps({key: str(value) for key, value in roots.items()}, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    temporary.replace(SETTINGS_PATH)
-
-
 def set_source_folder(kind: str, folder: str | Path) -> Path:
     if kind not in DEFAULT_LOCAL_ROOTS:
         raise ValueError(f"Unsupported daily art source: {kind}")
@@ -77,7 +67,13 @@ def set_source_folder(kind: str, folder: str | Path) -> Path:
         raise ValueError("Selected daily art source is not a folder")
     roots = load_source_folders()
     roots[kind] = selected
-    _save_source_folders(roots)
+    SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temporary = SETTINGS_PATH.with_suffix(".tmp")
+    temporary.write_text(
+        json.dumps({key: str(value) for key, value in roots.items()}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    temporary.replace(SETTINGS_PATH)
     LOCAL_ROOTS.clear()
     LOCAL_ROOTS.update(roots)
     return selected
@@ -196,55 +192,6 @@ def _iter_shallow(root: Path):
                     stack.append((child, depth + 1))
             except OSError:
                 continue
-
-
-def _automatic_source_candidates(kind: str) -> list[Path]:
-    """Return conventional local and VMware-shared folders for a missing/empty source."""
-    home = Path.home()
-    folder_names = (
-        ("竖屏", "竖图", "Portrait", "portrait")
-        if kind == "portrait"
-        else ("壁纸", "Wallpaper", "wallpaper")
-    )
-    bases = [
-        home / "Desktop",
-        home / "Pictures",
-        home / "OneDrive" / "Desktop",
-        home / "OneDrive" / "Pictures",
-    ]
-    values = [base / name for base in bases for name in folder_names]
-    if os.name == "nt":
-        share_name = "YangGumiPortrait" if kind == "portrait" else "YangGumiWallpaper"
-        values.append(Path(r"\\vmware-host\Shared Folders") / share_name)
-    unique: list[Path] = []
-    seen: set[str] = set()
-    for value in values:
-        key = str(value).casefold()
-        if key not in seen:
-            seen.add(key)
-            unique.append(value)
-    return unique
-
-
-def _scan_folder(root: Path) -> tuple[list[Path], list[Path]]:
-    if not root.exists() or not root.is_dir():
-        return [], []
-    scanned = list(_iter_shallow(root) or [])
-    supported = [path for path in scanned if path.suffix.casefold() in ALLOWED_SUFFIXES]
-    return scanned, supported
-
-
-def _discover_usable_source(kind: str, configured: Path) -> tuple[Path, list[Path], list[Path], bool]:
-    scanned, supported = _scan_folder(configured)
-    if supported:
-        return configured, scanned, supported, False
-    for candidate in _automatic_source_candidates(kind):
-        if str(candidate).casefold() == str(configured).casefold():
-            continue
-        candidate_scanned, candidate_supported = _scan_folder(candidate)
-        if candidate_supported:
-            return candidate, candidate_scanned, candidate_supported, True
-    return configured, scanned, supported, False
 
 
 def _asset_name(path: Path, mtime: float) -> str:
@@ -367,21 +314,6 @@ def rebuild_manifest(only_kind: str | None = None) -> dict[str, Any]:
         ASSET_DIR.mkdir(parents=True, exist_ok=True)
         entries: list[dict[str, Any]] = []
         scan_stats: dict[str, dict[str, int]] = {}
-        source_folders = {key: str(value) for key, value in LOCAL_ROOTS.items()}
-        scan_inputs: dict[str, tuple[Path, list[Path], list[Path]]] = {}
-        roots_changed = False
-        for kind, configured in list(LOCAL_ROOTS.items()):
-            if only_kind is not None and kind != only_kind:
-                continue
-            root, scanned_paths, paths, discovered = _discover_usable_source(kind, configured)
-            scan_inputs[kind] = (root, scanned_paths, paths)
-            source_folders[kind] = str(root)
-            roots_changed = roots_changed or discovered
-        if roots_changed:
-            resolved = {key: Path(source_folders[key]) for key in LOCAL_ROOTS}
-            _save_source_folders(resolved)
-            LOCAL_ROOTS.clear()
-            LOCAL_ROOTS.update(resolved)
         previous: dict[str, Any] = {}
         if only_kind is not None:
             try:
@@ -404,14 +336,15 @@ def rebuild_manifest(only_kind: str | None = None) -> dict[str, Any]:
                         entries.append(item)
             except (OSError, ValueError, TypeError, json.JSONDecodeError):
                 pass
-        for kind, root in list(LOCAL_ROOTS.items()):
+        for kind, root in LOCAL_ROOTS.items():
             if only_kind is not None and kind != only_kind:
                 continue
             quota = REFRESH_QUOTAS[kind]
-            root, scanned_paths, paths = scan_inputs.get(kind, (root, [], []))
             if not root.exists():
                 scan_stats[kind] = {"files_checked": 0, "supported": 0, "accepted": 0, "unreadable": 0}
                 continue
+            scanned_paths = list(_iter_shallow(root) or [])
+            paths = [path for path in scanned_paths if path.suffix.casefold() in ALLOWED_SUFFIXES]
             random.SystemRandom().shuffle(paths)
             accepted = 0
             unreadable = 0
@@ -461,7 +394,6 @@ def rebuild_manifest(only_kind: str | None = None) -> dict[str, Any]:
             "version": MANIFEST_VERSION,
             "updated_at": now.isoformat(timespec="seconds"),
             "refresh_slot": _hour_slot(now),
-            "source_folders": source_folders,
             "scan_stats": scan_stats,
             "items": entries,
         }
@@ -492,11 +424,6 @@ def _read_manifest(validate: bool = True) -> dict[str, Any]:
             "version": int(payload.get("version") or 0),
             "updated_at": payload.get("updated_at"),
             "refresh_slot": payload.get("refresh_slot"),
-            "source_folders": {
-                key: str(value)
-                for key, value in (payload.get("source_folders") or {}).items()
-                if key in LOCAL_ROOTS and value
-            },
             "scan_stats": {
                 key: {
                     "files_checked": int(value.get("files_checked") or 0),
@@ -510,7 +437,7 @@ def _read_manifest(validate: bool = True) -> dict[str, Any]:
             "items": items,
         }
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
-        return {"version": 0, "updated_at": None, "refresh_slot": None, "source_folders": {}, "scan_stats": {}, "items": []}
+        return {"version": 0, "updated_at": None, "refresh_slot": None, "scan_stats": {}, "items": []}
 
 
 def _refresh_if_stale() -> None:

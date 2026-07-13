@@ -63,8 +63,9 @@ class BangumiError(RuntimeError):
 
 ROOT = Path(__file__).resolve().parent
 RANKING_CACHE_PATH = ROOT / "data" / "bangumi_ranking_cache.json"
-RANKING_CACHE_VERSION = 4
+RANKING_CACHE_VERSION = 5
 _ranking_cache: dict[tuple[str, int, str], tuple[float, list[dict[str, Any]]]] = {}
+_ranking_window_cache: dict[tuple[str, int, int, str], tuple[float, list[dict[str, Any]]]] = {}
 _RANKING_CACHE_SECONDS = 60 * 60
 RANKING_MAX_ITEMS = 7200
 
@@ -112,6 +113,7 @@ def _save_ranking_disk_cache(payload: dict[str, Any]) -> None:
 
 def clear_ranking_cache() -> None:
     _ranking_cache.clear()
+    _ranking_window_cache.clear()
     try:
         RANKING_CACHE_PATH.unlink()
     except OSError:
@@ -122,9 +124,12 @@ def ranking_cache_count(category: str) -> int:
     """Return locally cached ranking rows without making a network request."""
     selected = category if category in RANKING_BROWSER_URLS else "动画"
     current = _load_ranking_disk_cache(ranking_quarter_key())
-    rows = ((current.get("categories") or {}).get(selected) or {}).get("items") or []
-    if rows:
-        return sum(isinstance(item, dict) for item in rows)
+    category_cache = (current.get("categories") or {}).get(selected) or {}
+    rows = category_cache.get("items") or []
+    windows = category_cache.get("windows") or {}
+    if rows or windows:
+        window_rows = [item for value in windows.values() if isinstance(value, dict) for item in (value.get("items") or [])]
+        return len({int(item["id"]) for item in [*rows, *window_rows] if isinstance(item, dict) and str(item.get("id") or "").isdigit()})
     stale = _load_ranking_disk_cache(ranking_quarter_key(), allow_stale=True)
     stale_rows = ((stale.get("categories") or {}).get(selected) or {}).get("items") or []
     return sum(isinstance(item, dict) for item in stale_rows)
@@ -228,6 +233,80 @@ def _ranking_item_from_subject(subject: dict[str, Any]) -> dict[str, Any]:
         "url": f"{WEB_BASE}/{int(subject['id'])}",
         "subject": subject,
     }
+
+
+def ranked_browser_subject_window(category: str, offset: int = 0, limit: int = 25) -> list[dict[str, Any]]:
+    """Read one ranking window directly instead of downloading every preceding page."""
+    selected = category if category in RANKING_BROWSER_URLS else "动画"
+    offset = min(max(int(offset), 0), RANKING_MAX_ITEMS - 1)
+    limit = min(max(int(limit), 1), 100)
+    quarter = ranking_quarter_key()
+    cache_key = (selected, offset, limit, quarter)
+    cached = _ranking_window_cache.get(cache_key)
+    if cached and time.time() - cached[0] < _RANKING_CACHE_SECONDS:
+        return [dict(item) for item in cached[1]]
+
+    disk_cache = _load_ranking_disk_cache(quarter)
+    category_cache = disk_cache.setdefault("categories", {}).setdefault(selected, {})
+    windows = category_cache.setdefault("windows", {})
+    window_key = f"{offset}:{limit}"
+    stored = windows.get(window_key) or {}
+    stored_rows = [dict(item) for item in stored.get("items", []) if isinstance(item, dict)]
+    if stored_rows:
+        _ranking_window_cache[cache_key] = (time.time(), stored_rows)
+        return stored_rows
+
+    stale_cache = _load_ranking_disk_cache(quarter, allow_stale=True)
+    stale_windows = (((stale_cache.get("categories") or {}).get(selected) or {}).get("windows") or {})
+    stale_rows = [dict(item) for item in (stale_windows.get(window_key) or {}).get("items", []) if isinstance(item, dict)]
+    results: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    api_offset = offset
+    api_page_size = min(100, max(50, limit * 2))
+
+    for _ in range(3):
+        params = {
+            **RANKING_API_FILTERS[selected],
+            "sort": "rank",
+            "limit": api_page_size,
+            "offset": api_offset,
+        }
+        try:
+            payload = _request("GET", "/subjects", params=params)
+        except BangumiError:
+            if stale_rows:
+                _ranking_window_cache[cache_key] = (time.time(), stale_rows)
+                return stale_rows
+            raise
+        subjects = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(subjects, list) or not subjects:
+            break
+        api_offset += len(subjects)
+        for subject in subjects:
+            if not isinstance(subject, dict) or not str(subject.get("id") or "").isdigit():
+                continue
+            subject_id = int(subject["id"])
+            if subject_id in seen or not _ranking_category_matches(selected, subject):
+                continue
+            seen.add(subject_id)
+            results.append(_ranking_item_from_subject(subject))
+            if len(results) >= limit:
+                break
+        if len(results) >= limit or len(subjects) < api_page_size:
+            break
+
+    results.sort(key=lambda item: (int(item.get("rank") or RANKING_MAX_ITEMS + 1), int(item.get("id") or 0)))
+    results = results[:limit]
+    windows[window_key] = {
+        "offset": offset,
+        "limit": limit,
+        "source": "official-api-window",
+        "items": [dict(item) for item in results],
+    }
+    category_cache["source"] = "official-api"
+    _save_ranking_disk_cache(disk_cache)
+    _ranking_window_cache[cache_key] = (time.time(), [dict(item) for item in results])
+    return results
 
 
 def ranked_browser_subjects(category: str, limit: int = 24) -> list[dict[str, Any]]:

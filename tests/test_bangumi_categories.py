@@ -83,19 +83,19 @@ class BangumiCategoryTest(unittest.TestCase):
             finally:
                 db.DATA_DIR, db.DB_PATH, db.EXPORT_DIR = original_paths
 
-    def test_empty_ranking_cache_waits_for_explicit_first_load(self):
+    def test_empty_ranking_cache_loads_automatically(self):
         original_cache_path = bgm.RANKING_CACHE_PATH
         original_memory_cache = dict(bgm._ranking_cache)
         with tempfile.TemporaryDirectory() as temp_dir:
             bgm.RANKING_CACHE_PATH = Path(temp_dir) / "ranking-cache.json"
             bgm._ranking_cache.clear()
             try:
-                with patch.object(bgm, "ranked_browser_subjects", side_effect=AssertionError("unexpected network fetch")) as fetch:
+                with patch.object(bgm, "ranked_browser_subject_window", return_value=[]) as fetch:
                     app = AppTest.from_file("app.py", default_timeout=30).run()
                     next(button for button in app.button if button.key == "sidebar_nav_Bangumi").click().run()
                 self.assertEqual(list(app.exception), [])
-                self.assertEqual(fetch.call_count, 0)
-                self.assertTrue(any(button.key == "bangumi_rank_first_load_动画" for button in app.button))
+                fetch.assert_called_once_with("动画", 0, 25)
+                self.assertFalse(any(button.key == "bangumi_rank_first_load_动画" for button in app.button))
             finally:
                 bgm.RANKING_CACHE_PATH = original_cache_path
                 bgm._ranking_cache.clear()
@@ -131,13 +131,42 @@ class BangumiCategoryTest(unittest.TestCase):
                     params={"type": 2, "sort": "rank", "limit": 50, "offset": 0},
                 )
                 disk = bgm._load_ranking_disk_cache(bgm.ranking_quarter_key())
-                self.assertEqual(disk["version"], 4)
+                self.assertEqual(disk["version"], 5)
                 self.assertEqual(disk["categories"]["动画"]["source"], "official-api")
                 self.assertEqual(len(disk["categories"]["动画"]["items"]), 2)
             finally:
                 bgm.RANKING_CACHE_PATH = original_cache_path
                 bgm._ranking_cache.clear()
                 bgm._ranking_cache.update(original_memory_cache)
+
+    def test_ranking_window_jumps_directly_to_requested_offset(self):
+        original_cache_path = bgm.RANKING_CACHE_PATH
+        original_memory_cache = dict(bgm._ranking_window_cache)
+        payload = {
+            "total": 7200,
+            "data": [
+                {
+                    "id": 901, "type": 2, "name": "测试动画", "name_cn": "测试动画",
+                    "date": "2026-01-01", "platform": "TV", "images": {},
+                    "rating": {"rank": 937, "score": 7.0, "total": 100}, "tags": [],
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bgm.RANKING_CACHE_PATH = Path(temp_dir) / "ranking-cache.json"
+            bgm._ranking_window_cache.clear()
+            try:
+                with patch.object(bgm, "_request", return_value=payload) as request:
+                    rows = bgm.ranked_browser_subject_window("动画", 936, 25)
+                self.assertEqual(rows[0]["rank"], 937)
+                request.assert_called_once_with(
+                    "GET", "/subjects",
+                    params={"type": 2, "sort": "rank", "limit": 50, "offset": 936},
+                )
+            finally:
+                bgm.RANKING_CACHE_PATH = original_cache_path
+                bgm._ranking_window_cache.clear()
+                bgm._ranking_window_cache.update(original_memory_cache)
 
     def test_rematching_does_not_overwrite_personal_scores_or_reviews(self):
         original_paths = db.DATA_DIR, db.DB_PATH, db.EXPORT_DIR
