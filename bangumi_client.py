@@ -213,7 +213,7 @@ def _save_rating_precision_cache(payload: dict[str, Any]) -> None:
 
 def _fetch_rating_perspective(subject_id: int) -> dict[str, Any]:
     last_error: Exception | None = None
-    for attempt in range(2):
+    for attempt in range(3):
         try:
             source = _request_web_page(f"{WEB_BASE}/{int(subject_id)}/stats")
             value = parse_rating_perspective(source)
@@ -224,13 +224,13 @@ def _fetch_rating_perspective(subject_id: int) -> dict[str, Any]:
             }
         except BangumiError as exc:
             last_error = exc
-            if attempt == 0:
-                time.sleep(0.25)
+            if attempt < 2:
+                time.sleep(0.4 * (attempt + 1))
     raise BangumiError(str(last_error or "Bangumi 评分透视读取失败"))
 
 
 def enrich_precise_anime_ratings(
-    items: Iterable[dict[str, Any]], *, force: bool = False, max_workers: int = 8,
+    items: Iterable[dict[str, Any]], *, force: bool = False, max_workers: int = 6,
 ) -> list[dict[str, Any]]:
     """Apply two-decimal scores from rating-perspective pages to Japanese anime rows.
 
@@ -253,13 +253,28 @@ def enrich_precise_anime_ratings(
         ]
         if missing:
             fetched: dict[int, dict[str, Any]] = {}
-            with ThreadPoolExecutor(max_workers=min(max(1, int(max_workers)), len(missing))) as executor:
-                futures = {executor.submit(_fetch_rating_perspective, subject_id): subject_id for subject_id in missing}
-                for future in as_completed(futures):
-                    try:
-                        fetched[futures[future]] = future.result()
-                    except (BangumiError, ValueError, TypeError):
-                        continue
+            pending = list(missing)
+            # Bangumi occasionally drops one request from a concurrent batch.
+            # Retry only the failed IDs in smaller waves so the API's one-decimal
+            # fallback is not silently displayed as a precise score.
+            for wave, worker_limit in enumerate((max_workers, 2, 1)):
+                if not pending:
+                    break
+                if wave:
+                    time.sleep(0.5 * wave)
+                failed: list[int] = []
+                with ThreadPoolExecutor(max_workers=min(max(1, int(worker_limit)), len(pending))) as executor:
+                    futures = {
+                        executor.submit(_fetch_rating_perspective, subject_id): subject_id
+                        for subject_id in pending
+                    }
+                    for future in as_completed(futures):
+                        subject_id = futures[future]
+                        try:
+                            fetched[subject_id] = future.result()
+                        except (BangumiError, ValueError, TypeError):
+                            failed.append(subject_id)
+                pending = failed
             for subject_id, value in fetched.items():
                 cache[str(subject_id)] = value
             if fetched:

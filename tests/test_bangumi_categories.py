@@ -39,6 +39,33 @@ class BangumiCategoryTest(unittest.TestCase):
             finally:
                 bgm.RATING_PRECISION_CACHE_PATH = original_path
 
+    def test_precise_rating_retries_a_dropped_parallel_request(self):
+        original_path = bgm.RATING_PRECISION_CACHE_PATH
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bgm.RATING_PRECISION_CACHE_PATH = Path(temp_dir) / "precision.json"
+            calls = {876: 0}
+
+            def fetch(subject_id):
+                calls[subject_id] = calls.get(subject_id, 0) + 1
+                if subject_id == 876 and calls[subject_id] == 1:
+                    raise bgm.BangumiError("temporary drop")
+                return {
+                    "score": 9.15,
+                    "votes": 31192,
+                    "date": bgm.datetime.now().date().isoformat(),
+                }
+
+            try:
+                with patch.object(bgm, "_fetch_rating_perspective", side_effect=fetch):
+                    rows = bgm.enrich_precise_anime_ratings(
+                        [{"id": 876, "score": 9.2}], max_workers=6
+                    )
+                self.assertEqual(rows[0]["score"], 9.15)
+                self.assertEqual(rows[0]["precision_source"], "bangumi-rating-perspective")
+                self.assertEqual(calls[876], 2)
+            finally:
+                bgm.RATING_PRECISION_CACHE_PATH = original_path
+
     def test_public_character_endpoint_keeps_voice_actors(self):
         payload = [{"name": "角色", "actors": [{"name": "声优"}]}]
         with patch.object(bgm, "_request", return_value=payload) as request:
