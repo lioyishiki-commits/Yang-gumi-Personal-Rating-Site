@@ -153,6 +153,10 @@ class ScoringAndLauncherTest(unittest.TestCase):
         self.assertIn('call "%~dp0安装并启动 Yang-gumi.bat"', batch)
         self.assertIn("PORT = 8501", launcher)
         self.assertIn('"--server.headless", "true"', launcher)
+        install_batch = (ROOT / "安装并启动 Yang-gumi.bat").read_text(encoding="utf-8")
+        for source in (batch, install_batch, launcher):
+            self.assertNotIn("share_public.py", source)
+            self.assertNotIn("启动只读分享", source)
         self.assertIn('port = 8501', config)
         self.assertIn('headless = true', config)
 

@@ -879,7 +879,7 @@ def inject_css(settings: dict[str, Any] | None = None) -> None:
     st.markdown(f"""
     <style>
       :root {{--yg-pink:#ff5c8a;--yg-pink-2:#ff86ae;--yg-cyan:#55d9ff;--yg-violet:#8f7cff;--yg-bg:#080a12;--yg-panel:#121622;--yg-line:rgba(153,169,205,.18);}}
-      html {{scroll-behavior:smooth;}}
+      html {{scroll-behavior:smooth;color-scheme:dark!important;}}
       body, [data-testid="stAppViewContainer"] {{background:radial-gradient(circle at 82% 0%,rgba(113,78,191,.16),transparent 32%),radial-gradient(circle at 22% 8%,rgba(255,67,126,.12),transparent 30%),#080a12;color:#f4f6fb;}}
       [data-testid="stHeader"] {{background:rgba(8,10,18,.58); backdrop-filter:blur(18px); border-bottom:1px solid rgba(255,255,255,.05);}}
       .block-container {{max-width:1320px; padding-top:2.1rem; padding-bottom:5rem; position:relative; z-index:2;}}
@@ -1059,7 +1059,18 @@ def inject_css(settings: dict[str, Any] | None = None) -> None:
       .stButton button:hover {{transform:none;border-color:rgba(214,90,122,.55);background:#28292d;box-shadow:none;}}
       .stButton button[kind="primary"] {{border:1px solid rgba(214,90,122,.48);background:#762b41;box-shadow:none;}}
       [data-baseweb="input"],[data-baseweb="select"]>div,[data-baseweb="textarea"] {{background:#111214!important;border-color:var(--yg-line)!important;border-radius:9px!important;}}
+      [data-baseweb="base-input"],[data-baseweb="input"]>div,[data-testid="stNumberInput"]>div,[data-testid="stDateInput"]>div {{background:#111214!important;color:#e7e7e9!important;}}
+      [data-baseweb="input"] input,[data-baseweb="base-input"] input,[data-baseweb="textarea"] textarea,[data-testid="stNumberInput"] input,[data-testid="stDateInput"] input,input:not([type="checkbox"]):not([type="radio"]),textarea,select {{background-color:#111214!important;color:#e7e7e9!important;-webkit-text-fill-color:#e7e7e9!important;caret-color:#e7e7e9!important;color-scheme:dark!important;}}
+      [data-baseweb="select"] input,[data-baseweb="select"] span,[data-baseweb="select"] svg,[data-testid="stNumberInput"] svg,[data-testid="stDateInput"] svg {{color:#e7e7e9!important;fill:#e7e7e9!important;-webkit-text-fill-color:#e7e7e9!important;}}
+      [data-testid="stNumberInput"] button,[data-testid="stDateInput"] button {{background:#17181b!important;color:#e7e7e9!important;border-color:var(--yg-line)!important;}}
+      [data-baseweb="button-group"] button,[data-testid="stBaseButton-segmented_control"] {{background:#0e1117!important;color:#e7e7e9!important;border-color:rgba(250,250,250,.20)!important;-webkit-text-fill-color:#e7e7e9!important;color-scheme:dark!important;}}
+      [data-baseweb="button-group"] button:hover,[data-testid="stBaseButton-segmented_control"]:hover {{background:#1b1d22!important;color:#fff!important;}}
+      [data-baseweb="button-group"] button[kind="segmented_controlActive"],[data-testid="stBaseButton-segmented_controlActive"] {{background:rgba(214,90,122,.16)!important;color:#ed7896!important;border-color:#d65a7a!important;-webkit-text-fill-color:#ed7896!important;}}
+      [data-testid="stFileUploaderDropzone"],div[role="listbox"],ul[role="listbox"] {{background:#151619!important;color:#e7e7e9!important;border-color:var(--yg-line)!important;color-scheme:dark!important;}}
+      input:-webkit-autofill,input:-webkit-autofill:hover,input:-webkit-autofill:focus {{-webkit-box-shadow:0 0 0 1000px #111214 inset!important;-webkit-text-fill-color:#e7e7e9!important;}}
+      input:disabled,textarea:disabled,[aria-disabled="true"] {{opacity:.72!important;background:#17181b!important;color:#a8a9ae!important;-webkit-text-fill-color:#a8a9ae!important;}}
       [data-testid="stExpander"] {{border:1px solid var(--yg-line)!important;border-radius:11px!important;background:#151619!important;}}
+      [data-testid="stExpander"] details,[data-testid="stExpander"] summary {{background:#151619!important;color:#e7e7e9!important;color-scheme:dark!important;}}
       [data-testid="stAlert"] {{border-radius:10px;background:#161a20;}}
       .yg-section-heading {{margin:1.35rem 0 .65rem;padding-bottom:.55rem;border-bottom:1px solid var(--yg-line);}}
       .yg-section-heading small {{color:var(--yg-pink);font-size:.52rem;}}
@@ -1374,7 +1385,7 @@ def inject_css(settings: dict[str, Any] | None = None) -> None:
       .st-key-home_profile_area [data-testid="stColumn"]>div,
       .st-key-home_profile_area [data-testid="stColumn"]>div>div,
       .st-key-home_profile_area [data-testid="stColumn"] [data-testid="stVerticalBlock"] {{height:100%;}}
-      .st-key-home_profile_area .yg-profile {{display:flex;align-items:flex-start;flex:1 1 auto;flex-direction:column;margin:.25rem 0 0;padding:.85rem;min-height:365px;}}
+      .st-key-home_profile_area .yg-profile {{display:flex;align-items:flex-start;flex:1 1 auto;flex-direction:column;margin:.25rem 0 0;padding:.85rem;min-height:365px;transform:translateY(-16px);}}
       .st-key-home_profile_area .yg-profile-avatar {{display:none;}}
       .st-key-home_profile_area .yg-profile-copy {{width:100%;}}
       .st-key-home_profile_area .yg-profile-copy>b {{font-size:28px!important;}}
@@ -1500,7 +1511,7 @@ def inject_css(settings: dict[str, Any] | None = None) -> None:
       @media (max-width:640px) {{.yg-poster-rail {{display:none;}}}}
       @media (max-width:640px) {{.yg-fanku-pos-m2,.yg-fanku-pos-p2,.yg-home-season-card.pos_m2,.yg-home-season-card.pos_p2 {{opacity:0;visibility:hidden;}}.yg-fanku-stage {{transform:scale(.96);}}[class*="st-key-season_candidate_0_"],[class*="st-key-season_candidate_4_"] {{display:none;}}}}
       @media (max-width:640px) {{.yg-fanku-pos-m1,.yg-fanku-pos-p1 {{opacity:0;visibility:hidden;}}.yg-fanku-scene {{grid-template-columns:48% 52%;}}}}
-      @media (max-width:640px) {{.yg-profile {{align-items:flex-start;flex-wrap:wrap;}}.yg-profile-stats {{grid-template-columns:repeat(3,1fr);width:100%;flex-basis:100%;}}.yg-category-overview,.yg-season-grid {{grid-template-columns:repeat(2,minmax(0,1fr));}}.yg-fanku-scene {{grid-template-columns:38% 62%;}}.yg-fanku-copy {{padding-left:1.4rem;}}.st-key-home_profile_area [data-testid="stHorizontalBlock"] {{flex-direction:column;}}}}
+      @media (max-width:640px) {{.yg-profile {{align-items:flex-start;flex-wrap:wrap;}}.yg-profile-stats {{grid-template-columns:repeat(3,1fr);width:100%;flex-basis:100%;}}.yg-category-overview,.yg-season-grid {{grid-template-columns:repeat(2,minmax(0,1fr));}}.yg-fanku-scene {{grid-template-columns:38% 62%;}}.yg-fanku-copy {{padding-left:1.4rem;}}.st-key-home_profile_area [data-testid="stHorizontalBlock"] {{flex-direction:column;}}.st-key-home_profile_area .yg-profile {{transform:none;}}}}
       @media (max-width:640px) {{[class*="_grid_card_"]>div[data-testid="stVerticalBlockBorderWrapper"] {{height:auto;min-height:520px;}}.st-key-home_recent_grid [class*="st-key-recent_row_"]>div[data-testid="stVerticalBlockBorderWrapper"],.st-key-home_recent_grid [class*="st-key-recent_finished_row_"]>div[data-testid="stVerticalBlockBorderWrapper"] {{height:auto;min-height:260px;}}}}
       @media (max-width:640px) {{[data-testid="stSidebar"] {{display:block;}}.st-key-top_navigation {{display:none;}}.block-container {{min-width:0!important;padding-top:1.2rem;}}.yg-profile-stats {{grid-template-columns:repeat(2,1fr);}}.yg-category-overview,.yg-season-grid {{grid-template-columns:1fr;}}.yg-bg-grid {{grid-template-columns:repeat(4,1fr);}}.yg-fanku-carousel {{height:420px;}}.yg-fanku-scene {{grid-template-columns:1fr;}}.yg-fanku-copy {{justify-content:flex-start;padding:1.2rem;}}.yg-fanku-stage {{margin-top:120px;}}.yg-season-stage {{height:500px;}}.yg-home-season-card {{display:none;}}.yg-home-season-card.pos_c {{display:block;width:min(72vw,240px);}}.yg-home-season-poster {{height:320px;}}[class*="st-key-work_"][class*="_info_panel"] {{position:static;}}}}
       @media (prefers-reduced-motion:reduce) {{*,*::before,*::after {{animation-duration:.01ms!important; animation-iteration-count:1!important; transition-duration:.01ms!important; scroll-behavior:auto!important;}}}}

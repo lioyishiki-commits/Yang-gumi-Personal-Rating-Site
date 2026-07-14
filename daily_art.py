@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parent
 MANIFEST_PATH = ROOT / "data" / "image_manifest.json"
 SETTINGS_PATH = ROOT / "data" / "daily_art_settings.json"
 ASSET_DIR = ROOT / "static" / "daily_art"
-MANIFEST_VERSION = 8
+MANIFEST_VERSION = 10
 DEFAULT_LOCAL_ROOTS = {
     "portrait": Path(
         os.getenv("YANGGUMI_PORTRAIT_DIR")
@@ -44,12 +44,15 @@ def load_source_folders() -> dict[str, Path]:
 
 
 LOCAL_ROOTS = load_source_folders()
-REFRESH_QUOTAS = {"portrait": 300, "wallpaper": 60}
-ALLOWED_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
-MAX_FILE_SIZE = 20 * 1024 * 1024
+REFRESH_QUOTAS = {"portrait": 400, "wallpaper": 100}
+MAX_NEW_ASSETS_PER_RESCAN = 3
+ALLOWED_SUFFIXES = {".jpg", ".jpeg", ".jfif", ".png", ".webp", ".avif", ".bmp", ".gif"}
+MAX_FILE_SIZE = 100 * 1024 * 1024
 MAX_INDEX_ITEMS = 500
 MAX_SAMPLE_ITEMS = 500
 MAX_CACHED_ASSETS = 900
+MAX_SCAN_FILES = 12000
+MAX_SCAN_DEPTH = 12
 TARGET_ASPECTS = {"portrait": 2 / 3, "wallpaper": 16 / 9}
 
 _refresh_lock = threading.Lock()
@@ -164,17 +167,30 @@ def _hour_slot(now: datetime | None = None) -> str:
 
 
 def _iter_shallow(root: Path):
-    """Yield files at the root and one directory below it; never scan a whole disk."""
-    try:
-        children = list(root.iterdir())
-    except OSError:
-        return
-    for child in children:
-        if child.is_file():
-            yield child
-        elif child.is_dir():
+    """Yield files recursively from the folder explicitly selected by the user.
+
+    Image libraries copied from another computer are often grouped several folders
+    deep.  The previous one-level scan silently missed those files.  Traversal stays
+    bounded and never follows directory links, so a mistaken selection cannot turn
+    into an unbounded disk scan.
+    """
+    stack: list[tuple[Path, int]] = [(root, 0)]
+    examined = 0
+    while stack and examined < MAX_SCAN_FILES:
+        current, depth = stack.pop()
+        try:
+            children = list(current.iterdir())
+        except OSError:
+            continue
+        for child in children:
+            if examined >= MAX_SCAN_FILES:
+                break
             try:
-                yield from (nested for nested in child.iterdir() if nested.is_file())
+                if child.is_file():
+                    examined += 1
+                    yield child
+                elif depth < MAX_SCAN_DEPTH and child.is_dir() and not child.is_symlink():
+                    stack.append((child, depth + 1))
             except OSError:
                 continue
 
@@ -290,7 +306,11 @@ def _homepage_asset(image: Image.Image, kind: str, focus: str) -> Image.Image:
 
 
 def rebuild_manifest(only_kind: str | None = None) -> dict[str, Any]:
-    """Build the full cache, or refresh only one selected source folder."""
+    """Refresh the index while reusing every unchanged cached image.
+
+    Re-scanning an existing library should be a metadata operation.  Source
+    images are decoded and resized only when they are new or have changed.
+    """
     if only_kind is not None and only_kind not in LOCAL_ROOTS:
         raise ValueError(f"Unsupported daily art source: {only_kind}")
     _refresh_lock.acquire()
@@ -298,10 +318,29 @@ def rebuild_manifest(only_kind: str | None = None) -> dict[str, Any]:
         MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
         ASSET_DIR.mkdir(parents=True, exist_ok=True)
         entries: list[dict[str, Any]] = []
+        scan_stats: dict[str, dict[str, int]] = {}
+        previous: dict[str, Any] = {}
+        try:
+            previous = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            previous = {}
+        previous_items = [item for item in previous.get("items", []) if isinstance(item, dict)]
+        previous_by_path = {
+            str(item.get("path") or ""): item for item in previous_items if item.get("path")
+        }
         if only_kind is not None:
             try:
-                previous = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
-                for item in previous.get("items", [])[:MAX_INDEX_ITEMS]:
+                scan_stats.update({
+                    key: {
+                        "files_checked": int(value.get("files_checked") or 0),
+                        "supported": int(value.get("supported") or 0),
+                        "accepted": int(value.get("accepted") or 0),
+                        "unreadable": int(value.get("unreadable") or 0),
+                    }
+                    for key, value in (previous.get("scan_stats") or {}).items()
+                    if key in LOCAL_ROOTS and isinstance(value, dict)
+                })
+                for item in previous_items[:MAX_INDEX_ITEMS]:
                     if item.get("type") == only_kind or item.get("type") not in LOCAL_ROOTS:
                         continue
                     asset = ASSET_DIR / Path(str(item.get("asset") or "")).name
@@ -314,32 +353,66 @@ def rebuild_manifest(only_kind: str | None = None) -> dict[str, Any]:
                 continue
             quota = REFRESH_QUOTAS[kind]
             if not root.exists():
+                scan_stats[kind] = {"files_checked": 0, "supported": 0, "accepted": 0, "unreadable": 0, "oversized": 0}
                 continue
-            paths = [path for path in (_iter_shallow(root) or []) if path.suffix.casefold() in ALLOWED_SUFFIXES]
-            random.SystemRandom().shuffle(paths)
+            scanned_paths = list(_iter_shallow(root) or [])
+            paths = [path for path in scanned_paths if path.suffix.casefold() in ALLOWED_SUFFIXES]
+            if previous_items:
+                reusable_paths: list[Path] = []
+                changed_paths: list[Path] = []
+                for path in paths:
+                    try:
+                        stat = path.stat()
+                        cached = previous_by_path.get(str(path)) or {}
+                        previous_asset_name = Path(str(cached.get("asset") or "")).name
+                        previous_cached_asset = ASSET_DIR / previous_asset_name if previous_asset_name else None
+                        unchanged = bool(
+                            previous_cached_asset
+                            and previous_cached_asset.exists()
+                            and int(cached.get("size") or -1) == int(stat.st_size)
+                            and abs(float(cached.get("mtime") or 0) - float(stat.st_mtime)) < 0.001
+                        )
+                    except OSError:
+                        unchanged = False
+                    (reusable_paths if unchanged else changed_paths).append(path)
+                random.SystemRandom().shuffle(reusable_paths)
+                random.SystemRandom().shuffle(changed_paths)
+                paths = changed_paths[:MAX_NEW_ASSETS_PER_RESCAN] + reusable_paths
+            else:
+                random.SystemRandom().shuffle(paths)
             accepted = 0
+            unreadable = 0
+            oversized = 0
             for path in paths:
                 if accepted >= quota:
                     break
                 try:
                     stat = path.stat()
-                    if stat.st_size <= 0 or stat.st_size > MAX_FILE_SIZE:
+                    if stat.st_size <= 0:
+                        continue
+                    if stat.st_size > MAX_FILE_SIZE:
+                        oversized += 1
                         continue
                     asset_name = _asset_name(path, stat.st_mtime)
                     cached_asset = ASSET_DIR / asset_name
-                    with Image.open(path) as source:
-                        source.verify()
+                    cached = previous_by_path.get(str(path)) or {}
+                    previous_asset_name = Path(str(cached.get("asset") or "")).name
+                    previous_cached_asset = ASSET_DIR / previous_asset_name if previous_asset_name else cached_asset
+                    if (
+                        previous_cached_asset.exists()
+                        and int(cached.get("size") or -1) == int(stat.st_size)
+                        and abs(float(cached.get("mtime") or 0) - float(stat.st_mtime)) < 0.001
+                    ):
+                        entries.append({**cached, "path": str(path), "asset": f"daily_art/{previous_cached_asset.name}"})
+                        accepted += 1
+                        continue
                     with Image.open(path) as source:
                         image = ImageOps.exif_transpose(source).convert("RGB")
+                        image.load()
                         width, height = image.size
-                        if kind == "portrait" and height < width * 1.08:
-                            continue
-                        if kind == "wallpaper" and width < height * 1.18:
-                            continue
                         focus = _focus_position(_trim_plain_border(image))
-                        if not cached_asset.exists():
-                            asset_image = _homepage_asset(image, kind, focus)
-                            asset_image.save(cached_asset, "WEBP", quality=80, method=4)
+                        asset_image = _homepage_asset(image, kind, focus)
+                        asset_image.save(cached_asset, "WEBP", quality=80, method=3)
                     entries.append({
                         "path": str(path), "size": stat.st_size, "width": width, "height": height,
                         "type": kind, "mtime": stat.st_mtime, "asset": f"daily_art/{asset_name}",
@@ -347,7 +420,15 @@ def rebuild_manifest(only_kind: str | None = None) -> dict[str, Any]:
                     })
                     accepted += 1
                 except (OSError, ValueError, Image.DecompressionBombError):
+                    unreadable += 1
                     continue
+            scan_stats[kind] = {
+                "files_checked": len(scanned_paths),
+                "supported": len(paths),
+                "accepted": accepted,
+                "unreadable": unreadable,
+                "oversized": oversized,
+            }
         referenced = {Path(item["asset"]).name for item in entries}
         cached_assets = sorted(
             ASSET_DIR.glob("*.webp"), key=lambda item: item.stat().st_mtime, reverse=True
@@ -361,6 +442,7 @@ def rebuild_manifest(only_kind: str | None = None) -> dict[str, Any]:
             "version": MANIFEST_VERSION,
             "updated_at": now.isoformat(timespec="seconds"),
             "refresh_slot": _hour_slot(now),
+            "scan_stats": scan_stats,
             "items": entries,
         }
         temporary = MANIFEST_PATH.with_suffix(".tmp")
@@ -390,10 +472,21 @@ def _read_manifest(validate: bool = True) -> dict[str, Any]:
             "version": int(payload.get("version") or 0),
             "updated_at": payload.get("updated_at"),
             "refresh_slot": payload.get("refresh_slot"),
+            "scan_stats": {
+                key: {
+                    "files_checked": int(value.get("files_checked") or 0),
+                    "supported": int(value.get("supported") or 0),
+                    "accepted": int(value.get("accepted") or 0),
+                    "unreadable": int(value.get("unreadable") or 0),
+                    "oversized": int(value.get("oversized") or 0),
+                }
+                for key, value in (payload.get("scan_stats") or {}).items()
+                if key in LOCAL_ROOTS and isinstance(value, dict)
+            },
             "items": items,
         }
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
-        return {"version": 0, "updated_at": None, "refresh_slot": None, "items": []}
+        return {"version": 0, "updated_at": None, "refresh_slot": None, "scan_stats": {}, "items": []}
 
 
 def _refresh_if_stale() -> None:

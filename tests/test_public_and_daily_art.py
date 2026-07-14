@@ -67,8 +67,9 @@ class PublicAndDailyArtTest(unittest.TestCase):
             portrait = root / "portrait"; wallpaper = root / "wallpaper"
             portrait.mkdir(); wallpaper.mkdir()
             Image.new("RGB", (300, 500), "red").save(portrait / "ok.jpg")
+            old = (daily_art.LOCAL_ROOTS, daily_art.MANIFEST_PATH, daily_art.ASSET_DIR, daily_art.MAX_FILE_SIZE)
+            daily_art.MAX_FILE_SIZE = (portrait / "ok.jpg").stat().st_size + 128
             (portrait / "too-big.jpg").write_bytes(b"x" * (daily_art.MAX_FILE_SIZE + 1))
-            old = (daily_art.LOCAL_ROOTS, daily_art.MANIFEST_PATH, daily_art.ASSET_DIR)
             daily_art.LOCAL_ROOTS = {"portrait": portrait, "wallpaper": wallpaper}
             daily_art.MANIFEST_PATH = root / "manifest.json"
             daily_art.ASSET_DIR = root / "assets"
@@ -79,8 +80,67 @@ class PublicAndDailyArtTest(unittest.TestCase):
                 self.assertEqual(len(loaded["items"]), 1)
                 self.assertEqual(loaded["items"][0]["type"], "portrait")
                 self.assertIn("refresh_slot", built)
+                self.assertEqual(built["scan_stats"]["portrait"]["files_checked"], 2)
+                self.assertEqual(built["scan_stats"]["portrait"]["supported"], 2)
+                self.assertEqual(built["scan_stats"]["portrait"]["accepted"], 1)
+                self.assertEqual(built["scan_stats"]["portrait"]["oversized"], 1)
+                with mock.patch.object(daily_art, "_homepage_asset", side_effect=AssertionError("unchanged image decoded")) as resize:
+                    rebuilt = daily_art.rebuild_manifest()
+                self.assertEqual(len(rebuilt["items"]), 1)
+                resize.assert_not_called()
             finally:
-                daily_art.LOCAL_ROOTS, daily_art.MANIFEST_PATH, daily_art.ASSET_DIR = old
+                daily_art.LOCAL_ROOTS, daily_art.MANIFEST_PATH, daily_art.ASSET_DIR, daily_art.MAX_FILE_SIZE = old
+
+    def test_manifest_finds_images_in_deeply_nested_new_computer_folders(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            portrait = root / "portrait"
+            nested = portrait / "artist" / "series" / "chapter" / "selected"
+            wallpaper = root / "wallpaper"
+            nested.mkdir(parents=True)
+            wallpaper.mkdir()
+            Image.new("RGB", (300, 500), "purple").save(nested / "deep.jpg")
+            old = (dict(daily_art.LOCAL_ROOTS), daily_art.MANIFEST_PATH, daily_art.ASSET_DIR)
+            daily_art.LOCAL_ROOTS.clear()
+            daily_art.LOCAL_ROOTS.update({"portrait": portrait, "wallpaper": wallpaper})
+            daily_art.MANIFEST_PATH = root / "manifest.json"
+            daily_art.ASSET_DIR = root / "assets"
+            try:
+                built = daily_art.rebuild_manifest("portrait")
+                self.assertEqual(len(built["items"]), 1)
+                self.assertEqual(Path(built["items"][0]["path"]).name, "deep.jpg")
+                self.assertTrue((daily_art.ASSET_DIR / Path(built["items"][0]["asset"]).name).is_file())
+            finally:
+                daily_art.LOCAL_ROOTS.clear()
+                daily_art.LOCAL_ROOTS.update(old[0])
+                daily_art.MANIFEST_PATH, daily_art.ASSET_DIR = old[1], old[2]
+
+    def test_selected_folder_accepts_supported_images_regardless_of_orientation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            portrait = root / "portrait"; wallpaper = root / "wallpaper"
+            portrait.mkdir(); wallpaper.mkdir()
+            Image.new("RGB", (900, 400), "orange").save(portrait / "wide-in-portrait.bmp")
+            Image.new("RGB", (400, 900), "cyan").save(wallpaper / "tall-in-wallpaper.gif")
+            old = (dict(daily_art.LOCAL_ROOTS), daily_art.MANIFEST_PATH, daily_art.ASSET_DIR)
+            daily_art.LOCAL_ROOTS.clear()
+            daily_art.LOCAL_ROOTS.update({"portrait": portrait, "wallpaper": wallpaper})
+            daily_art.MANIFEST_PATH = root / "manifest.json"
+            daily_art.ASSET_DIR = root / "assets"
+            try:
+                built = daily_art.rebuild_manifest()
+                self.assertEqual({item["type"] for item in built["items"]}, {"portrait", "wallpaper"})
+                sizes = {}
+                for item in built["items"]:
+                    with Image.open(daily_art.ASSET_DIR / Path(item["asset"]).name) as image:
+                        sizes[item["type"]] = image.size
+                self.assertEqual(sizes, {"portrait": (720, 1080), "wallpaper": (1280, 720)})
+                self.assertEqual(built["scan_stats"]["portrait"]["accepted"], 1)
+                self.assertEqual(built["scan_stats"]["wallpaper"]["accepted"], 1)
+            finally:
+                daily_art.LOCAL_ROOTS.clear()
+                daily_art.LOCAL_ROOTS.update(old[0])
+                daily_art.MANIFEST_PATH, daily_art.ASSET_DIR = old[1], old[2]
 
     def test_homepage_asset_crops_toward_detected_focus(self):
         source = Image.new("RGB", (400, 200), "blue")

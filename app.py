@@ -9,6 +9,7 @@ import os
 import random
 import secrets
 import sys
+import threading
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
@@ -443,6 +444,15 @@ def _cached_bangumi_rank_cover_url(subject_id: int, image_url: str | None) -> st
     return fallback
 
 
+def _bangumi_rank_cover_display_url(subject_id: int, image_url: str | None) -> str:
+    cached = _existing_bangumi_rank_cover(subject_id)
+    if cached:
+        return _static_url(cached)
+    if image_url:
+        return str(image_url)
+    return _local_file_data_url(ROOT / "covers" / "default.svg")
+
+
 def _precache_bangumi_rank_covers(rows: list[dict[str, Any]]) -> None:
     if _running_under_streamlit_apptest():
         return
@@ -455,8 +465,10 @@ def _precache_bangumi_rank_covers(rows: list[dict[str, Any]]) -> None:
     ]
     if not pending:
         return
-    with ThreadPoolExecutor(max_workers=min(8, len(pending))) as executor:
-        list(executor.map(lambda args: _cached_bangumi_rank_cover_url(*args), pending))
+    def cache_pending() -> None:
+        with ThreadPoolExecutor(max_workers=min(8, len(pending))) as executor:
+            list(executor.map(lambda args: _cached_bangumi_rank_cover_url(*args), pending))
+    threading.Thread(target=cache_pending, name="yanggumi-bangumi-covers", daemon=True).start()
 
 
 def _bangumi_cover_html(src: str, title: str) -> str:
@@ -1154,6 +1166,17 @@ def render_daily_art() -> None:
 
         if not active_source:
             st.markdown('<div class="yg-art-empty">今日美图索引为空 · 点击重新扫描图片建立本地索引</div>', unsafe_allow_html=True)
+            scan_stats = manifest.get("scan_stats") or {}
+            if scan_stats:
+                checked = sum(int(value.get("files_checked") or 0) for value in scan_stats.values())
+                supported = sum(int(value.get("supported") or 0) for value in scan_stats.values())
+                accepted = sum(int(value.get("accepted") or 0) for value in scan_stats.values())
+                unreadable = sum(int(value.get("unreadable") or 0) for value in scan_stats.values())
+                oversized = sum(int(value.get("oversized") or 0) for value in scan_stats.values())
+                st.caption(
+                    f"最近扫描：检查 {checked} 个文件 · 识别图片 {supported} 张 · "
+                    f"已生成 {accepted} 张 · 无法读取 {unreadable} 张 · 超过 100MB {oversized} 张"
+                )
             if st.button("重新扫描图片", key="daily_art_rescan_empty", use_container_width=True):
                 if _block_readonly_action():
                     _readonly_notice()
@@ -1193,17 +1216,24 @@ def render_daily_art() -> None:
             .yg-art-card.wallpaper{width:100%;height:auto;aspect-ratio:16/9}
             .yg-art-card::before{content:"";position:absolute;inset:0;background-image:var(--src);background-size:cover;background-position:var(--pos);filter:blur(18px) brightness(.58) saturate(1.1);transform:scale(1.12);opacity:.48}
             .yg-art-card img{position:relative;z-index:1;display:block;width:100%;height:100%;object-fit:cover;object-position:var(--pos);border-radius:10px}
+            .yg-art-index-gap{height:26px}
+            .yg-art-index{height:24px;display:flex;align-items:center;color:#8f919a;font-size:13px;line-height:1.3}
+            .yg-art-button-gap{height:10px}
             </style>
             <div class="yg-art-grid """ + grid_class + """">""" + "".join(cards) + "</div>",
             unsafe_allow_html=True,
         )
         portrait_count = sum(item.get("type") == "portrait" for item in manifest["items"])
         wallpaper_count = sum(item.get("type") == "wallpaper" for item in manifest["items"])
-        st.caption(
-            f"本地索引 竖屏 {portrait_count} 张 · 壁纸 {wallpaper_count} 张 · 更新于 {manifest.get('updated_at') or '—'}"
+        st.markdown(
+            '<div class="yg-art-index-gap"></div>'
+            f'<div class="yg-art-index">本地索引　竖屏 {portrait_count} 张 · 壁纸 {wallpaper_count} 张 · '
+            f'更新于 {html.escape(str(manifest.get("updated_at") or "—"))}</div>',
+            unsafe_allow_html=True,
         )
         if refreshing_art:
             st.caption("新版焦点缩略图正在后台更新，稍后刷新页面即可看到更稳的裁切。")
+        st.markdown('<div class="yg-art-button-gap"></div>', unsafe_allow_html=True)
         if st.button("重新扫描图片", key="daily_art_rescan", use_container_width=True):
             if _block_readonly_action():
                 _readonly_notice()
@@ -1639,6 +1669,18 @@ def _render_search_notice(prefix: str) -> None:
     {"warning": st.warning, "info": st.info, "error": st.error}.get(level, st.caption)(message)
 
 
+def _enrich_search_animation_ratings(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Use the same /stats precision cache for animation search cards."""
+    animation_rows = [item for item in results if int(item.get("type") or 0) == 2]
+    if not animation_rows:
+        return results
+    precise_by_id = {
+        int(item.get("id") or 0): item
+        for item in bgm.enrich_precise_anime_ratings(animation_rows)
+    }
+    return [precise_by_id.get(int(item.get("id") or 0), item) for item in results]
+
+
 def _search_add_bangumi() -> None:
     query = (st.session_state.get("add_query") or "").strip()
     category = st.session_state.get("add_search_category") or "全部"
@@ -1652,7 +1694,8 @@ def _search_add_bangumi() -> None:
             query, category,
             fallback_keywords=[draft.get("title"), draft.get("original_title"), draft.get("bangumi_name_cn"), draft.get("bangumi_name")],
         )
-        st.session_state.add_results = bgm.rank_search_results(query, raw_results)
+        ranked_results = bgm.rank_search_results(query, raw_results)
+        st.session_state.add_results = _enrich_search_animation_ratings(ranked_results)
         if st.session_state.add_results:
             _set_search_notice("add_search")
         else:
@@ -1676,7 +1719,8 @@ def _search_match_bangumi(selected: dict[str, Any]) -> None:
             query, category,
             fallback_keywords=[selected.get("title"), selected.get("original_title"), selected.get("bangumi_name_cn"), selected.get("bangumi_name")],
         )
-        st.session_state.match_results = bgm.rank_search_results(query, raw_results)
+        ranked_results = bgm.rank_search_results(query, raw_results)
+        st.session_state.match_results = _enrich_search_animation_ratings(ranked_results)
         if st.session_state.match_results:
             _set_search_notice("match_search")
         else:
@@ -1695,7 +1739,8 @@ def _search_public_bangumi() -> None:
         return
     try:
         raw_results = bgm.search_subjects_by_category(query, category)
-        st.session_state.bangumi_public_results = bgm.rank_search_results(query, raw_results)
+        ranked_results = bgm.rank_search_results(query, raw_results)
+        st.session_state.bangumi_public_results = _enrich_search_animation_ratings(ranked_results)
         if st.session_state.bangumi_public_results:
             _set_search_notice("bangumi_public_search")
         else:
@@ -1725,6 +1770,10 @@ def page_add() -> None:
         def choose(subject, normalized):
             try:
                 detail = bgm.get_subject(subject["id"]); db.cache_subject(subject["id"], detail)
+                if subject.get("precision_source"):
+                    detail["rating"] = dict(detail.get("rating") or {})
+                    detail["rating"]["score"] = (subject.get("rating") or {}).get("score") or subject.get("score")
+                    detail["rating"]["total"] = (subject.get("rating") or {}).get("total") or subject.get("votes")
                 st.session_state.new_draft = bgm.suggested_local_fields(detail, query, category); st.session_state.add_results=[]; st.rerun()
             except bgm.BangumiError as exc: st.error(str(exc))
         render_subject_result_views(st.session_state.get("add_results", []), "add_subject", choose, category)
@@ -1821,6 +1870,13 @@ def _save_ranked_subject(item: dict[str, Any], status: str, open_editor: bool) -
     preferred_category = _ranked_preferred_category(str(item.get("category") or "动画"))
     try:
         detail = bgm.get_subject(subject_id)
+        if item.get("precision_source") == "bangumi-rating-perspective":
+            detail = dict(detail)
+            detail["rating"] = {
+                **(detail.get("rating") or {}),
+                "score": round(float(item["score"]), 2),
+                "total": int(item.get("votes") or 0),
+            }
         db.cache_subject(subject_id, detail)
     except bgm.BangumiError:
         detail = item.get("subject") or {
@@ -1862,7 +1918,6 @@ def render_bangumi_ranking_browser() -> None:
                 return
             bgm.clear_ranking_cache()
             st.session_state.bangumi_rank_page = 1
-            st.session_state[f"_bangumi_rank_load_{category}"] = True
             st.rerun()
     previous_state = st.session_state.get("_bangumi_rank_state")
     current_state = (category, page_size)
@@ -1873,33 +1928,27 @@ def render_bangumi_ranking_browser() -> None:
     max_rank_page = max(1, (ranking_capacity + page_size - 1) // page_size)
     page = max(1, min(max_rank_page, int(st.session_state.get("bangumi_rank_page", 1))))
     source_links = {
-        "动画": "https://bgm.tv/anime/browser/日本?sort=rank",
-        "漫画": "https://bgm.tv/book/browser/?sort=rank",
-        "小说": "https://bgm.tv/book/browser/?sort=rank",
-        "游戏": "https://bgm.tv/game/browser?sort=rank",
+        "动画": "https://api.bgm.tv/v0/subjects?type=2&sort=rank",
+        "漫画": "https://api.bgm.tv/v0/subjects?type=1&cat=1001&sort=rank",
+        "小说": "https://api.bgm.tv/v0/subjects?type=1&cat=1002&sort=rank",
+        "游戏": "https://api.bgm.tv/v0/subjects?type=4&cat=4001&sort=rank",
     }
     st.caption(f"数据源 · {source_links[category]} · 当前季度缓存 {bgm.ranking_quarter_key()} · 操作按钮会写入 Yang-gumi 本地评分库")
-    load_key = f"_bangumi_rank_load_{category}"
-    if bgm.ranking_cache_count(category) == 0 and not st.session_state.get(load_key):
-        st.info("这台电脑还没有此分类的排行榜缓存。首次加载需要联网，并可能因网络状况等待一会儿。")
-        if st.button("加载排行榜", type="primary", key=f"bangumi_rank_first_load_{category}", use_container_width=True):
-            st.session_state[load_key] = True
-            st.rerun()
-        return
+    start_index = (page - 1) * page_size
     try:
-        requested_limit = min(ranking_capacity, page * page_size + 1)
         with st.spinner("正在读取 Bangumi 公开排行榜…"):
-            fetched_rows = bgm.ranked_browser_subjects(category, requested_limit)
+            fetched_rows = bgm.ranked_browser_subject_window(category, start_index, page_size + 1)
     except bgm.BangumiError as exc:
-        st.session_state[load_key] = False
         st.warning(f"Bangumi 排行榜暂时读取失败：{exc}")
         fetched_rows = []
-    start_index = (page - 1) * page_size
-    rows = fetched_rows[start_index:start_index + page_size]
+    rows = fetched_rows[:page_size]
+    if category == "动画" and rows:
+        with st.spinner("正在读取 Bangumi 评分透视的两位小数评分…"):
+            rows = bgm.enrich_precise_anime_ratings(rows)
     if page > 1 and not rows:
         st.session_state.bangumi_rank_page = max(1, (len(fetched_rows) + page_size - 1) // page_size)
         st.rerun()
-    has_next = len(fetched_rows) > start_index + page_size
+    has_next = len(fetched_rows) > page_size
     if not rows:
         render_empty_state("排行榜暂时没有可显示条目", "稍后刷新缓存，或切换分类再试。", "◎")
         return
@@ -1911,7 +1960,6 @@ def render_bangumi_ranking_browser() -> None:
         max_jump_rank=ranking_capacity,
         top=True,
     )
-    rows = fetched_rows[start_index:start_index + page_size]
     _precache_bangumi_rank_covers(rows)
 
     local_by_bangumi = {
@@ -1928,7 +1976,7 @@ def render_bangumi_ranking_browser() -> None:
             status = local.get("status")
             with column:
                 with st.container(border=True, key=f"bangumi_rank_card_{category}_{subject_id}"):
-                    image_url = _cached_bangumi_rank_cover_url(subject_id, item.get("image") or "")
+                    image_url = _bangumi_rank_cover_display_url(subject_id, item.get("image") or "")
                     st.markdown(_bangumi_cover_html(image_url, item.get("title") or ""), unsafe_allow_html=True)
                     title = html.escape(str(item.get("title") or "未命名"))
                     original = html.escape(str(item.get("original_title") or ""))
@@ -2642,6 +2690,28 @@ def page_data() -> None:
                     st.success(f"恢复成功；恢复前快照：{safety.name}")
                     st.rerun()
                 except Exception as exc: st.error(f"恢复失败：{exc}")
+        st.markdown("#### 加载已保存的数据")
+        uploaded_backup = st.file_uploader(
+            "选择卸载前保存或从其他电脑导出的 Yang-gumi 数据库（.db）",
+            type=["db"],
+            key="load_saved_database",
+            help="导入前会自动为当前数据库建立安全备份。",
+        )
+        load_confirm = st.checkbox(
+            "我确认加载后会以所选备份替换当前数据",
+            key="load_saved_database_confirm",
+        )
+        if st.button(
+            "加载数据",
+            disabled=uploaded_backup is None or not load_confirm,
+            use_container_width=True,
+        ):
+            try:
+                db.restore_database(uploaded_backup.getvalue())
+                st.success("数据加载成功；加载前的数据库已自动保存在 backups 文件夹。")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"数据加载失败：{exc}")
     with right:
         st.subheader("导出")
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")

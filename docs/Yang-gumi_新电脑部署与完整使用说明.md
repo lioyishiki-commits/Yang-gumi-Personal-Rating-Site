@@ -173,7 +173,7 @@ Windows 以后启动：双击 启动 Yang-gumi.bat
 
 ## **3.2 Windows 日常启动**
 
-首次安装成功后，以后只需要双击“启动 Yang-gumi.bat”。它会复用已创建的 .venv，不会每次重新安装全部依赖。主站默认 headless=true，由启动器统一打开浏览器，避免 Streamlit 和启动器各自打开一次造成“双开”。
+首次安装成功后，以后只需要双击“启动 Yang-gumi.bat”。它会复用已创建的 .venv，不会每次重新安装全部依赖。主站默认 headless=true，由启动器统一打开浏览器，避免 Streamlit 和启动器各自打开一次造成“双开”。主站启动器不会启动 `share_public.py`；只有单独双击“启动只读分享.bat”才会开启 8502 只读服务。
 
 ## **3.3 macOS / Linux 安装启动**
 
@@ -289,7 +289,8 @@ Bangumi 页面读取 Bangumi 公开条目搜索和公开排行榜。它不要求
 | 公开 JSON 导出 | 删除私人备注、本地资源路径、封面本地路径等敏感信息。 |
 | CSV 导出     | 打包为 ZIP，方便表格查看。            |
 | SQLite 备份  | 最适合完整迁移；使用在线 backup API。   |
-| 恢复         | 恢复前后检查必需表和完整性；属于高风险操作。     |
+| 恢复         | 恢复 backups 目录中的备份；恢复前自动建立安全快照。 |
+| 加载数据      | 上传卸载前保存或从其他电脑复制的 `.db`；验证完整性后替换当前数据。 |
 
 # **5. 评分体系与计算公式**
 
@@ -356,7 +357,7 @@ Bangumi 页面读取 Bangumi 公开条目搜索和公开排行榜。它不要求
 
 # **6. 今日美图：本地图库、裁切、刷新与随机**
 
-今日美图只读取你的本地图片。开源仓库不会附带作者图库。新电脑默认从用户主目录下的 Pictures/Yang-gumi/Portrait 与 Pictures/Yang-gumi/Wallpaper 读取；如果目录不存在或为空，首页会显示空状态或提示重新选择。
+今日美图只读取你明确选择的本机图片目录。开源仓库不会附带作者图库。新电脑默认从用户主目录下的 Pictures/Yang-gumi/Portrait 与 Pictures/Yang-gumi/Wallpaper 读取；如果目录不存在或为空，首页会显示空状态或提示重新选择。
 
 | **类别** | **默认目录**                       | **环境变量**               |
 | ------ | ------------------------------ | ---------------------- |
@@ -372,12 +373,12 @@ Bangumi 页面读取 Bangumi 公开条目搜索和公开排行榜。它不要求
 | -------- | ----------------------- |
 | 支持格式     | JPG / JPEG / PNG / WebP |
 | 单文件最大    | 20 MiB                  |
-| 扫描范围     | 源目录本身和向下一层子目录；不做无限深递归   |
+| 扫描范围     | 所选目录内安全递归；最多 12 层、检查 12,000 个文件，不跟随目录链接 |
 | 每次重建候选配额 | 竖屏最多 300；壁纸最多 60        |
 | 清单最大项目   | 500                     |
 | 浏览候选抽样   | 500                     |
 | 本地缓存资产上限 | 900                     |
-| 清单格式版本   | version 8               |
+| 清单格式版本   | version 9               |
 
 ## **6.2 图片判定与生成尺寸**
 
@@ -478,7 +479,7 @@ Bangumi 页面读取 Bangumi 公开条目搜索和公开排行榜。它不要求
 
 # **8. Bangumi 搜索与公开排行榜**
 
-Bangumi 功能分为两类：公开条目搜索和公开排行榜抓取。它们都只读取公开数据，不需要用户账号，不会修改外部网站。
+Bangumi 功能分为两类：公开条目搜索和公开排行榜读取。它们都通过官方公开 API，只读取公开数据，不需要用户账号，不会修改外部网站。排行榜不再解析容易变化的网页 HTML。
 
 ## **8.1 搜索接口**
 
@@ -498,9 +499,10 @@ Bangumi 功能分为两类：公开条目搜索和公开排行榜抓取。它们
 
 | **分类** | **公开页面**                                                                                                               |
 | ------ | ---------------------------------------------------------------------------------------------------------------------- |
-| 动画     | [https://bgm.tv/anime/browser/%E6%97%A5%E6%9C%AC?sort=rank](https://bgm.tv/anime/browser/%E6%97%A5%E6%9C%AC?sort=rank) |
-| 漫画/小说  | [https://bgm.tv/book/browser/?sort=rank](https://bgm.tv/book/browser/?sort=rank)                                       |
-| 游戏     | [https://bgm.tv/game/browser?sort=rank](https://bgm.tv/game/browser?sort=rank)                                         |
+| 动画     | [https://api.bgm.tv/v0/subjects?type=2&sort=rank](https://api.bgm.tv/v0/subjects?type=2&sort=rank) |
+| 漫画     | [https://api.bgm.tv/v0/subjects?type=1&cat=1001&sort=rank](https://api.bgm.tv/v0/subjects?type=1&cat=1001&sort=rank) |
+| 小说     | [https://api.bgm.tv/v0/subjects?type=1&cat=1002&sort=rank](https://api.bgm.tv/v0/subjects?type=1&cat=1002&sort=rank) |
+| 游戏     | [https://api.bgm.tv/v0/subjects?type=4&cat=4001&sort=rank](https://api.bgm.tv/v0/subjects?type=4&cat=4001&sort=rank) |
 
 | **缓存与抓取参数** | **值**                                 |
 | ----------- | ------------------------------------- |
@@ -629,7 +631,16 @@ SQLite 备份使用 SQLite 在线 backup API，时间戳精确到微秒。备份
 | **迁移重点：**数据库可以通过 SQLite 备份迁移；本地图库和自定义背景是电脑本地文件，不能假设新电脑路径相同，需要重新选择。 |
 | ------------------------------------------------------------------ |
 
-## **11.3 恢复后的检查**
+## **11.3 卸载前保存与重新加载**
+
+1. Windows 双击“卸载 Yang-gumi.bat”。
+2. 在弹窗中选择是否保存评分数据库；选择“取消”会停止卸载。
+3. 选择保存时，必须把 `.db` 保存到 Yang-gumi 安装目录之外。程序会使用 SQLite 在线备份并执行完整性检查。
+4. 保存完成后，卸载程序才会删除当前 Yang-gumi 安装目录；选择不保存时会再次提示数据不可恢复。
+5. 以后重新安装并首次启动 Yang-gumi，进入“数据管理 → 加载已保存的数据”，上传该 `.db` 并勾选确认。
+6. 加载前网站会自动备份当前数据库；验证失败的文件不会替换当前数据。
+
+## **11.4 恢复后的检查**
 
 | **检查项** | **通过标准**                       |
 | ------- | ------------------------------ |
@@ -654,7 +665,8 @@ SQLite 备份使用 SQLite 在线 backup API，时间戳精确到微秒。备份
 | 提示端口占用                | 关闭已有 Yang-gumi/Streamlit 进程，或检查 8501/8502 是否被其他程序占用。 |
 | 依赖安装失败                | 检查网络、pip 源和 requirements.txt；必要时删除 .venv 后重新运行安装脚本。  |
 | 浏览器打不开 127.0.0.1:8501 | 等待启动健康检查完成；若仍失败，查看启动窗口和 logs/app_errors.log。         |
-| 今日美图为空                | 确认默认目录存在且有 JPG/JPEG/PNG/WebP；或点击“竖屏”“壁纸”重新选择目录。      |
+| 新电脑出现白边或白框           | 先更新 Edge 并重启网站。程序已强制控件深色；旧 Edge 仍异常时安装 Dark Reader（扩展 ID `eimadpbcbfnmbkopoojfekhnkhdbieeh`），仅对 `127.0.0.1:8501` 启用并固定深色。 |
+| 今日美图为空                | 确认所选目录及多级子目录中有 JPG/JPEG/JFIF/PNG/WebP/AVIF/BMP/GIF；点击“竖屏”“壁纸”重新选择虚拟机本机目录，再点击“重新扫描图片”。页面会显示最近检查、识别、生成和无法读取的数量，便于判断目录或文件问题。 |
 | 换一组不换图                | 可能候选太少或最近 30 个 key 防重复限制；增加图库后重建索引。                  |
 | Bangumi 搜索失败          | 检查网络；公开 API 或网页临时异常时稍后重试。                            |
 | 季度新番缺图                | 等待海报缓存补全；远程图失败时本地缓存会兜底。                              |
@@ -663,7 +675,7 @@ SQLite 备份使用 SQLite 在线 backup API，时间戳精确到微秒。备份
 
 ## **12.3 发布前测试基线**
 
-当前程序发布前验证基线为 99 项 unittest 全部通过。维护者修改核心逻辑后，应至少运行完整 unittest，再进行页面人工检查。
+当前程序发布前验证基线为 107 项 unittest 全部通过。维护者修改核心逻辑后，应至少运行完整 unittest，再进行页面人工检查。
 
 python -m unittest discover tests
 
@@ -741,12 +753,14 @@ python -m unittest discover tests
 | 壁纸环境变量   | YANGGUMI_WALLPAPER_DIR         |
 | 支持格式     | JPG / JPEG / PNG / WebP        |
 | 单文件最大    | 20 MiB                         |
+| 最大扫描深度   | 12 层                           |
+| 最大检查文件数  | 12,000                         |
 | 竖屏候选配额   | 300                            |
 | 壁纸候选配额   | 60                             |
 | 清单最大     | 500                            |
 | 浏览候选抽样   | 500                            |
 | 本地缓存资产上限 | 900                            |
-| 清单版本     | version 8                      |
+| 清单版本     | version 9                      |
 | 竖屏输出     | 720 × 1080                     |
 | 壁纸输出     | 1280 × 720                     |
 | 壁纸概率     | 10%                            |
@@ -793,9 +807,10 @@ python -m unittest discover tests
 | 项目仓库         | [https://github.com/lioyishiki-commits/Yang-gumi-Personal-Rating-Site](https://github.com/lioyishiki-commits/Yang-gumi-Personal-Rating-Site) | 下载 ZIP、查看源码、提交 issue 或二次开发。 |
 | Bangumi API  | [https://api.bgm.tv/v0](https://api.bgm.tv/v0)                                                                                               | 公开 API。                     |
 | Bangumi 条目页  | [https://bgm.tv/subject/{id}](https://bgm.tv/subject/{id})                                                                                   | 公开条目详情兜底。                   |
-| Bangumi 动画排行 | [https://bgm.tv/anime/browser/%E6%97%A5%E6%9C%AC?sort=rank](https://bgm.tv/anime/browser/%E6%97%A5%E6%9C%AC?sort=rank)                       | 动画公开排行榜。                    |
-| Bangumi 书籍排行 | [https://bgm.tv/book/browser/?sort=rank](https://bgm.tv/book/browser/?sort=rank)                                                             | 漫画/小说公开排行榜。                 |
-| Bangumi 游戏排行 | [https://bgm.tv/game/browser?sort=rank](https://bgm.tv/game/browser?sort=rank)                                                               | 游戏公开排行榜。                    |
+| Bangumi 动画排行 | [https://api.bgm.tv/v0/subjects?type=2&sort=rank](https://api.bgm.tv/v0/subjects?type=2&sort=rank) | 官方动画排行榜 API。 |
+| Bangumi 漫画排行 | [https://api.bgm.tv/v0/subjects?type=1&cat=1001&sort=rank](https://api.bgm.tv/v0/subjects?type=1&cat=1001&sort=rank) | 官方漫画排行榜 API。 |
+| Bangumi 小说排行 | [https://api.bgm.tv/v0/subjects?type=1&cat=1002&sort=rank](https://api.bgm.tv/v0/subjects?type=1&cat=1002&sort=rank) | 官方小说排行榜 API。 |
+| Bangumi 游戏排行 | [https://api.bgm.tv/v0/subjects?type=4&cat=4001&sort=rank](https://api.bgm.tv/v0/subjects?type=4&cat=4001&sort=rank) | 官方游戏排行榜 API。 |
 | KissSub      | [http://www.kisssub.org/](http://www.kisssub.org/)                                                                                           | 季度新番标题与排期参考。                |
 | YUC Wiki     | [https://yuc.wiki/{YYYY}{MM}/](https://yuc.wiki/{YYYY}{MM}/)                                                                                 | 季度新番排期页面。                   |
 

@@ -77,6 +77,25 @@ class UiSystemTest(unittest.TestCase):
         self.assertIn("filter:none", rule)
         self.assertNotIn("saturate(", rule)
 
+    def test_old_edge_native_form_controls_are_forced_dark(self) -> None:
+        config = copy.deepcopy(settings.DEFAULT_SETTINGS)
+        with patch.object(components.st, "markdown") as markdown:
+            components.inject_css(config)
+        css = markdown.call_args.args[0]
+        self.assertIn("color-scheme:dark!important", css)
+        self.assertIn('[data-testid="stNumberInput"] button', css)
+        self.assertIn('input:not([type="checkbox"]):not([type="radio"])', css)
+        self.assertIn('[data-testid="stExpander"] summary', css)
+        self.assertIn('[data-testid="stFileUploaderDropzone"]', css)
+        self.assertIn('[data-testid="stBaseButton-segmented_control"]', css)
+        self.assertIn('[data-testid="stBaseButton-segmented_controlActive"]', css)
+        segmented_rule = next(
+            rule for rule in css.split("}")
+            if '[data-testid="stBaseButton-segmented_control"]' in rule and ":hover" not in rule
+        )
+        self.assertIn("background:#0e1117!important", segmented_rule)
+        self.assertIn("-webkit-text-fill-color:#e7e7e9!important", segmented_rule)
+
     def test_background_renderer_is_fully_disabled(self) -> None:
         page = {
             "background_enabled": True, "background_mode": "auto_poster_blur",

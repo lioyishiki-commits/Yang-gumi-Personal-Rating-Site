@@ -1,7 +1,8 @@
 @echo off
 chcp 65001 >nul
-title Yang-gumi
+title Yang-gumi 本地评分库
 cd /d "%~dp0"
+rem Compatibility entry point: python start_yanggumi.py
 
 if not exist ".venv\Scripts\python.exe" goto setup
 ".venv\Scripts\python.exe" -c "import streamlit" >nul 2>nul

@@ -26,16 +26,34 @@ class SeasonalAnimeTest(unittest.TestCase):
     def setUp(self):
         self.original_paths = db.DATA_DIR, db.DB_PATH, db.EXPORT_DIR
         self.original_source_path = seasonal.SEASONAL_SOURCE_PATH
+        self.original_cover_refresh_path = seasonal.MISSING_COVER_REFRESH_PATH
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name)
         db.DATA_DIR, db.DB_PATH, db.EXPORT_DIR = root, root / "acgn.db", root / "exports"
         seasonal.SEASONAL_SOURCE_PATH = root / "seasonal_title_sources.json"
+        seasonal.MISSING_COVER_REFRESH_PATH = root / "missing_cover_refresh.json"
         db.init_db()
 
     def tearDown(self):
         db.DATA_DIR, db.DB_PATH, db.EXPORT_DIR = self.original_paths
         seasonal.SEASONAL_SOURCE_PATH = self.original_source_path
+        seasonal.MISSING_COVER_REFRESH_PATH = self.original_cover_refresh_path
         self.temp.cleanup()
+
+    def test_midnight_cover_refresh_only_fills_empty_bound_anime(self):
+        missing_id = db.save_work({"title": "测试动画", "type": "动画", "bangumi_id": 101})
+        existing_id = db.save_work({
+            "title": "已有封面", "type": "动画", "bangumi_id": 102,
+            "bangumi_image_url": "https://example.test/existing.jpg",
+        })
+        db.save_work({"title": "不是动画", "type": "游戏", "bangumi_id": 103})
+        with patch.object(seasonal.bgm, "get_subject", return_value=subject(101)) as fetch:
+            self.assertEqual(seasonal.refresh_missing_anime_covers(), 1)
+        fetch.assert_called_once_with(101)
+        self.assertEqual(db.get_work(missing_id)["bangumi_image_url"], "https://example.test/poster.jpg")
+        self.assertEqual(db.get_work(existing_id)["bangumi_image_url"], "https://example.test/existing.jpg")
+        ran, count = seasonal.refresh_missing_anime_covers_if_due(datetime.now())
+        self.assertEqual((ran, count), (False, 0))
 
     def test_quarter_boundaries(self):
         expected = {

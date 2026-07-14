@@ -4,8 +4,10 @@ from __future__ import annotations
 import html
 import json
 import re
+import threading
 import time
 import unicodedata
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -30,10 +32,16 @@ CATEGORY_SUBJECT_TYPES: dict[str, tuple[int, ...] | None] = {
 RANKING_SUBJECT_TYPES = {"动画": 2, "漫画": 1, "小说": 1, "游戏": 4}
 RANKING_CATEGORY_LABELS = ("动画", "漫画", "小说", "游戏")
 RANKING_BROWSER_URLS = {
-    "动画": "https://bgm.tv/anime/browser/%E6%97%A5%E6%9C%AC?sort=rank",
-    "漫画": "https://bgm.tv/book/browser/?sort=rank",
-    "小说": "https://bgm.tv/book/browser/?sort=rank",
-    "游戏": "https://bgm.tv/game/browser?sort=rank",
+    "动画": "https://api.bgm.tv/v0/subjects?type=2&sort=rank",
+    "漫画": "https://api.bgm.tv/v0/subjects?type=1&cat=1001&sort=rank",
+    "小说": "https://api.bgm.tv/v0/subjects?type=1&cat=1002&sort=rank",
+    "游戏": "https://api.bgm.tv/v0/subjects?type=4&cat=4001&sort=rank",
+}
+RANKING_API_FILTERS = {
+    "动画": {"type": 2},
+    "漫画": {"type": 1, "cat": 1001},
+    "小说": {"type": 1, "cat": 1002},
+    "游戏": {"type": 4, "cat": 4001},
 }
 RAW_TYPE_NAMES = {1: "书籍", 2: "动画", 3: "音乐", 4: "游戏", 6: "三次元"}
 RELEVANCE_ORDER = {
@@ -57,10 +65,14 @@ class BangumiError(RuntimeError):
 
 ROOT = Path(__file__).resolve().parent
 RANKING_CACHE_PATH = ROOT / "data" / "bangumi_ranking_cache.json"
-RANKING_CACHE_VERSION = 3
+RATING_PRECISION_CACHE_PATH = ROOT / "data" / "bangumi_rating_precision.json"
+RANKING_CACHE_VERSION = 7
+RATING_PRECISION_CACHE_VERSION = 1
 _ranking_cache: dict[tuple[str, int, str], tuple[float, list[dict[str, Any]]]] = {}
+_ranking_window_cache: dict[tuple[str, int, int, str], tuple[float, list[dict[str, Any]]]] = {}
 _RANKING_CACHE_SECONDS = 60 * 60
 RANKING_MAX_ITEMS = 7200
+_rating_precision_lock = threading.Lock()
 
 
 def ranking_quarter_key(value: datetime | None = None) -> str:
@@ -106,6 +118,7 @@ def _save_ranking_disk_cache(payload: dict[str, Any]) -> None:
 
 def clear_ranking_cache() -> None:
     _ranking_cache.clear()
+    _ranking_window_cache.clear()
     try:
         RANKING_CACHE_PATH.unlink()
     except OSError:
@@ -116,9 +129,12 @@ def ranking_cache_count(category: str) -> int:
     """Return locally cached ranking rows without making a network request."""
     selected = category if category in RANKING_BROWSER_URLS else "动画"
     current = _load_ranking_disk_cache(ranking_quarter_key())
-    rows = ((current.get("categories") or {}).get(selected) or {}).get("items") or []
-    if rows:
-        return sum(isinstance(item, dict) for item in rows)
+    category_cache = (current.get("categories") or {}).get(selected) or {}
+    rows = category_cache.get("items") or []
+    windows = category_cache.get("windows") or {}
+    if rows or windows:
+        window_rows = [item for value in windows.values() if isinstance(value, dict) for item in (value.get("items") or [])]
+        return len({int(item["id"]) for item in [*rows, *window_rows] if isinstance(item, dict) and str(item.get("id") or "").isdigit()})
     stale = _load_ranking_disk_cache(ranking_quarter_key(), allow_stale=True)
     stale_rows = ((stale.get("categories") or {}).get(selected) or {}).get("items") or []
     return sum(isinstance(item, dict) for item in stale_rows)
@@ -159,6 +175,141 @@ def _request_web_page(url: str) -> str:
         raise BangumiError(f"Bangumi 排行榜读取失败：{exc}") from exc
 
 
+def parse_rating_perspective(source: str) -> dict[str, Any]:
+    """Read only the public rating summary from a Bangumi /stats page."""
+    summary = source.split('id="chartCollectInterestType"', 1)[0]
+    score_match = re.search(
+        r'class="item orange"[\s\S]{0,240}?class="num">\s*([\d.]+)\s*</span>', summary
+    )
+    votes_match = re.search(
+        r'class="item sky"[\s\S]{0,240}?class="num">\s*([\d,]+)\s*</span>', summary
+    )
+    if not score_match:
+        raise BangumiError("Bangumi 评分透视没有返回公开评分")
+    return {
+        "score": round(float(score_match.group(1)), 2),
+        "votes": int(votes_match.group(1).replace(",", "")) if votes_match else None,
+    }
+
+
+def _load_rating_precision_cache() -> dict[str, Any]:
+    try:
+        payload = json.loads(RATING_PRECISION_CACHE_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        payload = {}
+    if payload.get("version") != RATING_PRECISION_CACHE_VERSION or not isinstance(payload.get("items"), dict):
+        return {"version": RATING_PRECISION_CACHE_VERSION, "updated_at": None, "items": {}}
+    return payload
+
+
+def _save_rating_precision_cache(payload: dict[str, Any]) -> None:
+    RATING_PRECISION_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    payload["version"] = RATING_PRECISION_CACHE_VERSION
+    payload["updated_at"] = datetime.now().isoformat(timespec="seconds")
+    temporary = RATING_PRECISION_CACHE_PATH.with_suffix(".tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    temporary.replace(RATING_PRECISION_CACHE_PATH)
+
+
+def _fetch_rating_perspective(subject_id: int) -> dict[str, Any]:
+    last_error: Exception | None = None
+    for attempt in range(3):
+        try:
+            source = _request_web_page(f"{WEB_BASE}/{int(subject_id)}/stats")
+            value = parse_rating_perspective(source)
+            return {
+                **value,
+                "date": datetime.now().date().isoformat(),
+                "fetched_at": datetime.now().isoformat(timespec="seconds"),
+            }
+        except BangumiError as exc:
+            last_error = exc
+            if attempt < 2:
+                time.sleep(0.4 * (attempt + 1))
+    raise BangumiError(str(last_error or "Bangumi 评分透视读取失败"))
+
+
+def enrich_precise_anime_ratings(
+    items: Iterable[dict[str, Any]], *, force: bool = False, max_workers: int = 6,
+) -> list[dict[str, Any]]:
+    """Apply two-decimal scores from rating-perspective pages to Japanese anime rows.
+
+    Only ``/subject/<id>/stats`` is read.  No reviews, comments, staff, accounts or
+    other page data are requested or retained.
+    """
+    rows = [dict(item) for item in items]
+    ids = list(dict.fromkeys(
+        int(item["id"]) for item in rows if str(item.get("id") or "").isdigit()
+    ))
+    if not ids:
+        return rows
+    today = datetime.now().date().isoformat()
+    with _rating_precision_lock:
+        payload = _load_rating_precision_cache()
+        cache = payload.setdefault("items", {})
+        missing = [
+            subject_id for subject_id in ids
+            if force or str((cache.get(str(subject_id)) or {}).get("date") or "") != today
+        ]
+        if missing:
+            fetched: dict[int, dict[str, Any]] = {}
+            pending = list(missing)
+            # Bangumi occasionally drops one request from a concurrent batch.
+            # Retry only the failed IDs in smaller waves so the API's one-decimal
+            # fallback is not silently displayed as a precise score.
+            for wave, worker_limit in enumerate((max_workers, 2, 1)):
+                if not pending:
+                    break
+                if wave:
+                    time.sleep(0.5 * wave)
+                failed: list[int] = []
+                with ThreadPoolExecutor(max_workers=min(max(1, int(worker_limit)), len(pending))) as executor:
+                    futures = {
+                        executor.submit(_fetch_rating_perspective, subject_id): subject_id
+                        for subject_id in pending
+                    }
+                    for future in as_completed(futures):
+                        subject_id = futures[future]
+                        try:
+                            fetched[subject_id] = future.result()
+                        except (BangumiError, ValueError, TypeError):
+                            failed.append(subject_id)
+                pending = failed
+            for subject_id, value in fetched.items():
+                cache[str(subject_id)] = value
+            if fetched:
+                _save_rating_precision_cache(payload)
+        snapshot = {subject_id: dict(cache.get(str(subject_id)) or {}) for subject_id in ids}
+    for item in rows:
+        subject_id = int(item.get("id") or 0)
+        precise = snapshot.get(subject_id) or {}
+        if precise.get("score") is not None:
+            item["score"] = round(float(precise["score"]), 2)
+            item["precision_source"] = "bangumi-rating-perspective"
+            if isinstance(item.get("rating"), dict):
+                item["rating"] = dict(item["rating"])
+                item["rating"]["score"] = item["score"]
+        if precise.get("votes") is not None:
+            item["votes"] = int(precise["votes"])
+            if isinstance(item.get("rating"), dict):
+                item["rating"] = dict(item["rating"])
+                item["rating"]["total"] = item["votes"]
+    return rows
+
+
+def cached_ranking_subject_ids(category: str = "动画") -> list[int]:
+    """Return known ranking IDs without any network request."""
+    payload = _load_ranking_disk_cache(ranking_quarter_key(), allow_stale=True)
+    category_cache = (payload.get("categories") or {}).get(category) or {}
+    candidates = [item for item in category_cache.get("items", []) if isinstance(item, dict)]
+    for window in (category_cache.get("windows") or {}).values():
+        if isinstance(window, dict):
+            candidates.extend(item for item in window.get("items", []) if isinstance(item, dict))
+    return list(dict.fromkeys(
+        int(item["id"]) for item in candidates if str(item.get("id") or "").isdigit()
+    ))
+
+
 def _strip_tags(value: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html.unescape(value))).strip()
 
@@ -196,9 +347,10 @@ def _parse_browser_ranking_page(source: str) -> list[dict[str, Any]]:
 
 def _ranking_category_matches(category: str, subject: dict[str, Any]) -> bool:
     source = japanese_source_status(subject)
-    if source == "excluded":
-        return False
-    if category != "动画" and source != "confirmed":
+    # Every public ranking category is Japan-only.  In particular, animation
+    # must not treat an unknown origin as Japanese: Bangumi's type=2 endpoint
+    # also contains Pixar, European and other non-Japanese animation.
+    if source != "confirmed":
         return False
     inferred = infer_local_category(subject, "轻小说" if category == "小说" else category)
     if category == "小说":
@@ -206,8 +358,100 @@ def _ranking_category_matches(category: str, subject: dict[str, Any]) -> bool:
     return inferred == category
 
 
+def _ranking_item_from_subject(subject: dict[str, Any]) -> dict[str, Any]:
+    normalized = normalize_subject(subject)
+    title = normalized.get("bangumi_name_cn") or normalized.get("bangumi_name") or "未命名"
+    original = normalized.get("bangumi_name") or title
+    return {
+        "id": int(subject["id"]),
+        "title": title,
+        "original_title": original,
+        "rank": normalized.get("bangumi_rank"),
+        "score": normalized.get("bangumi_score"),
+        "votes": normalized.get("bangumi_total_votes"),
+        "image": normalized.get("bangumi_image_url") or "",
+        "info": " · ".join(value for value in (str(subject.get("date") or ""), str(subject.get("platform") or "")) if value),
+        "url": f"{WEB_BASE}/{int(subject['id'])}",
+        "subject": subject,
+    }
+
+
+def ranked_browser_subject_window(category: str, offset: int = 0, limit: int = 25) -> list[dict[str, Any]]:
+    """Read one ranking window directly instead of downloading every preceding page."""
+    selected = category if category in RANKING_BROWSER_URLS else "动画"
+    offset = min(max(int(offset), 0), RANKING_MAX_ITEMS - 1)
+    limit = min(max(int(limit), 1), 100)
+    quarter = ranking_quarter_key()
+    cache_key = (selected, offset, limit, quarter)
+    cached = _ranking_window_cache.get(cache_key)
+    if cached and time.time() - cached[0] < _RANKING_CACHE_SECONDS:
+        return [dict(item) for item in cached[1]]
+
+    disk_cache = _load_ranking_disk_cache(quarter)
+    category_cache = disk_cache.setdefault("categories", {}).setdefault(selected, {})
+    windows = category_cache.setdefault("windows", {})
+    window_key = f"{offset}:{limit}"
+    stored = windows.get(window_key) or {}
+    stored_rows = [dict(item) for item in stored.get("items", []) if isinstance(item, dict)]
+    if stored_rows:
+        _ranking_window_cache[cache_key] = (time.time(), stored_rows)
+        return stored_rows
+
+    stale_cache = _load_ranking_disk_cache(quarter, allow_stale=True)
+    stale_windows = (((stale_cache.get("categories") or {}).get(selected) or {}).get("windows") or {})
+    stale_rows = [dict(item) for item in (stale_windows.get(window_key) or {}).get("items", []) if isinstance(item, dict)]
+    results: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    api_offset = offset
+    api_page_size = min(100, max(50, limit * 2))
+
+    for _ in range(3):
+        params = {
+            **RANKING_API_FILTERS[selected],
+            "sort": "rank",
+            "limit": api_page_size,
+            "offset": api_offset,
+        }
+        try:
+            payload = _request("GET", "/subjects", params=params)
+        except BangumiError:
+            if stale_rows:
+                _ranking_window_cache[cache_key] = (time.time(), stale_rows)
+                return stale_rows
+            raise
+        subjects = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(subjects, list) or not subjects:
+            break
+        api_offset += len(subjects)
+        for subject in subjects:
+            if not isinstance(subject, dict) or not str(subject.get("id") or "").isdigit():
+                continue
+            subject_id = int(subject["id"])
+            if subject_id in seen or not _ranking_category_matches(selected, subject):
+                continue
+            seen.add(subject_id)
+            results.append(_ranking_item_from_subject(subject))
+            if len(results) >= limit:
+                break
+        if len(results) >= limit or len(subjects) < api_page_size:
+            break
+
+    results.sort(key=lambda item: (int(item.get("rank") or RANKING_MAX_ITEMS + 1), int(item.get("id") or 0)))
+    results = results[:limit]
+    windows[window_key] = {
+        "offset": offset,
+        "limit": limit,
+        "source": "official-api-window",
+        "items": [dict(item) for item in results],
+    }
+    category_cache["source"] = "official-api"
+    _save_ranking_disk_cache(disk_cache)
+    _ranking_window_cache[cache_key] = (time.time(), [dict(item) for item in results])
+    return results
+
+
 def ranked_browser_subjects(category: str, limit: int = 24) -> list[dict[str, Any]]:
-    """Scrape Bangumi public ranking pages, then filter to Japanese ACGN subjects."""
+    """Load ranked subjects from Bangumi's official public API and cache them locally."""
     selected = category if category in RANKING_BROWSER_URLS else "动画"
     limit = min(max(int(limit), 1), RANKING_MAX_ITEMS)
     quarter = ranking_quarter_key()
@@ -233,84 +477,53 @@ def ranked_browser_subjects(category: str, limit: int = 24) -> list[dict[str, An
         return results[:limit]
 
     seen: set[int] = {int(item["id"]) for item in results if str(item.get("id") or "").isdigit()}
-    base_url = RANKING_BROWSER_URLS[selected]
-    browser_page_size = 24
-    if selected == "动画":
-        max_pages = min(RANKING_MAX_ITEMS // browser_page_size, max(1, (limit + browser_page_size - 1) // browser_page_size + 2))
-    else:
-        max_pages = min(RANKING_MAX_ITEMS // browser_page_size, max(6, (limit + 11) // 12 + 4))
-    start_page = max(1, int(category_cache.get("loaded_pages") or 0) + 1)
+    api_page_size = 50
+    offset = max(0, int(category_cache.get("loaded_offset") or 0))
     completed = bool(category_cache.get("complete"))
     if completed:
         _ranking_cache[cache_key] = (time.time(), [dict(item) for item in results])
         return results[:limit]
-    loaded_pages = start_page - 1
-    reached_end = False
-    for page in range(start_page, max_pages + 1):
+
+    while len(results) < limit and offset < RANKING_MAX_ITEMS:
+        params = {
+            **RANKING_API_FILTERS[selected],
+            "sort": "rank",
+            "limit": api_page_size,
+            "offset": offset,
+        }
         try:
-            rows = _parse_browser_ranking_page(_request_web_page(_browser_page_url(base_url, page)))
+            payload = _request("GET", "/subjects", params=params)
         except BangumiError:
             if stale_results:
                 fallback_rows = stale_results[:limit]
                 _ranking_cache[cache_key] = (time.time(), [dict(item) for item in fallback_rows])
                 return fallback_rows
             raise
-        if not rows:
+        subjects = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(subjects, list) or not subjects:
             category_cache["complete"] = True
-            reached_end = True
             break
-        loaded_pages = page
-        for row in rows:
-            subject_id = int(row["id"])
+        offset += len(subjects)
+        for subject in subjects:
+            if not isinstance(subject, dict) or not str(subject.get("id") or "").isdigit():
+                continue
+            subject_id = int(subject["id"])
             if subject_id in seen:
                 continue
             seen.add(subject_id)
-            if selected == "动画":
-                detail = {}
-            else:
-                try:
-                    detail = get_subject(subject_id)
-                except BangumiError:
-                    detail = {}
-            subject = detail or {
-                "id": subject_id,
-                "type": RANKING_SUBJECT_TYPES.get(selected, 2),
-                "name": row["original_title"] or row["title"],
-                "name_cn": row["title"],
-                "images": {"common": row.get("image") or ""},
-                "rating": {"score": row.get("score"), "rank": row.get("rank"), "total": row.get("votes")},
-            }
             if not _ranking_category_matches(selected, subject):
                 continue
-            normalized = normalize_subject({**subject, "id": subject_id})
-            title = normalized.get("bangumi_name_cn") or row["title"] or normalized.get("bangumi_name") or "未命名"
-            original = normalized.get("bangumi_name") or row["original_title"] or title
-            results.append({
-                **row,
-                "title": title,
-                "original_title": original,
-                "image": normalized.get("bangumi_image_url") or row.get("image") or "",
-                "score": normalized.get("bangumi_score") if normalized.get("bangumi_score") is not None else row.get("score"),
-                "votes": normalized.get("bangumi_total_votes") if normalized.get("bangumi_total_votes") is not None else row.get("votes"),
-                "rank": normalized.get("bangumi_rank") or row.get("rank"),
-                "subject": subject,
-            })
+            results.append(_ranking_item_from_subject(subject))
             if len(results) >= limit:
-                category_cache.update({
-                    "items": [dict(item) for item in results],
-                    "loaded_pages": loaded_pages,
-                    "complete": False,
-                })
-                _save_ranking_disk_cache(disk_cache)
-                _ranking_cache[cache_key] = (time.time(), [dict(item) for item in results])
-                return results
-    if reached_end or loaded_pages >= RANKING_MAX_ITEMS // browser_page_size:
-        category_cache["complete"] = True
-    else:
-        category_cache["complete"] = False
+                break
+        total = int(payload.get("total") or 0) if isinstance(payload, dict) else 0
+        if len(subjects) < api_page_size or (total and offset >= total):
+            category_cache["complete"] = True
+            break
     category_cache.update({
         "items": [dict(item) for item in results],
-        "loaded_pages": loaded_pages,
+        "loaded_offset": offset,
+        "source": "official-api",
     })
     _save_ranking_disk_cache(disk_cache)
     _ranking_cache[cache_key] = (time.time(), [dict(item) for item in results])
@@ -427,9 +640,21 @@ def japanese_source_status(subject: dict[str, Any]) -> str:
     if subject.get("type") not in {1, 2, 4}:
         return "excluded"
     text = _classification_text(subject)
+    tag_names = {
+        str(item.get("name", "") if isinstance(item, dict) else item).strip().casefold()
+        for item in (subject.get("tags") or [])
+    }
+    foreign_origin_tags = {
+        "非日本动画", "非日本動畫", "非日本動畫電影", "欧美", "歐美", "欧洲", "歐洲",
+        "美国", "美國", "以色列", "法国", "法國", "英国", "英國", "韩国", "韓國",
+        "中国", "中國", "国产", "國產", "pixar", "disney", "皮克斯", "迪士尼",
+    }
+    if tag_names & foreign_origin_tags:
+        return "excluded"
     foreign_markers = (
         "中国动画", "国产动画", "国产游戏", "中国游戏", "donghua",
         "美国动画", "欧美动画", "american animation", "韩国漫画", "韩国动画", "webtoon",
+        "非日本动画", "非日本動畫", "pixar", "disney",
         "国家 中国", "地区 中国", "国家/地区 中国", "原产地 中国",
         "国家 美国", "地区 美国", "国家/地区 美国", "原产地 美国",
         "国家 韩国", "地区 韩国", "国家/地区 韩国", "原产地 韩国",
@@ -444,7 +669,10 @@ def japanese_source_status(subject: dict[str, Any]) -> str:
     )
     if any(marker in text for marker in japanese_markers):
         return "confirmed"
-    if any("\u3040" <= char <= "\u30ff" for char in text):
+    # Kana in a translated alias or an incidental user tag does not prove
+    # Japanese origin (for example Pixar's Soul has the alias ソウル).
+    primary_name = str(subject.get("name") or "")
+    if any("\u3040" <= char <= "\u30ff" for char in primary_name):
         return "confirmed"
     # A Japanese work can contain an overseas release note such as
     # "其他上映日期：中国大陆"; that is not the work's country of origin.
