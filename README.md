@@ -80,6 +80,7 @@ chmod +x install_and_start.sh
 - [隐私说明](docs/PRIVACY.md)
 - [`docs/Yang-gumi_新电脑部署与完整使用说明_20260704.docx`](docs/Yang-gumi_新电脑部署与完整使用说明_20260704.docx)（适合离线阅读）
 - [`docs/Yang-gumi配置说明.docx`](docs/Yang-gumi配置说明.docx)（完整修订版，不删减原说明）
+- [`docs/Yang-gumi网站视频介绍与部署使用文稿.md`](docs/Yang-gumi网站视频介绍与部署使用文稿.md)（18分钟中文视频口播、画面与注意事项）
 - [第三方组件声明](THIRD_PARTY_NOTICES.md)
 - [更新记录](CHANGELOG.md)
 
