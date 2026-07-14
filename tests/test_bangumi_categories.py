@@ -11,6 +11,34 @@ from streamlit.testing.v1 import AppTest
 
 
 class BangumiCategoryTest(unittest.TestCase):
+    def test_rating_perspective_parser_keeps_only_precise_score_and_votes(self):
+        source = '''
+        <div class="gridStats">
+          <div class="item orange"><span class="num">9.17</span><span class="desc">神作</span></div>
+          <div class="item purple"><span class="num">1.11</span><span class="desc">标准差</span></div>
+          <div class="item sky"><span class="num">9,952</span><span class="desc">评分数</span></div>
+        </div><div id="chartCollectInterestType"></div>
+        <div class="item orange"><span class="num">9.07</span><span class="desc">VIB</span></div>
+        '''
+        self.assertEqual(bgm.parse_rating_perspective(source), {"score": 9.17, "votes": 9952})
+
+    def test_precise_rating_cache_avoids_reloading_same_day(self):
+        original_path = bgm.RATING_PRECISION_CACHE_PATH
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bgm.RATING_PRECISION_CACHE_PATH = Path(temp_dir) / "precision.json"
+            try:
+                with patch.object(bgm, "_fetch_rating_perspective", return_value={
+                    "score": 9.17, "votes": 9952, "date": bgm.datetime.now().date().isoformat(),
+                    "fetched_at": bgm.datetime.now().isoformat(timespec="seconds"),
+                }) as fetch:
+                    first = bgm.enrich_precise_anime_ratings([{"id": 326, "score": 9.2}])
+                    second = bgm.enrich_precise_anime_ratings([{"id": 326, "score": 9.2}])
+                self.assertEqual(first[0]["score"], 9.17)
+                self.assertEqual(second[0]["votes"], 9952)
+                fetch.assert_called_once_with(326)
+            finally:
+                bgm.RATING_PRECISION_CACHE_PATH = original_path
+
     def test_public_character_endpoint_keeps_voice_actors(self):
         payload = [{"name": "角色", "actors": [{"name": "声优"}]}]
         with patch.object(bgm, "_request", return_value=payload) as request:

@@ -1216,17 +1216,24 @@ def render_daily_art() -> None:
             .yg-art-card.wallpaper{width:100%;height:auto;aspect-ratio:16/9}
             .yg-art-card::before{content:"";position:absolute;inset:0;background-image:var(--src);background-size:cover;background-position:var(--pos);filter:blur(18px) brightness(.58) saturate(1.1);transform:scale(1.12);opacity:.48}
             .yg-art-card img{position:relative;z-index:1;display:block;width:100%;height:100%;object-fit:cover;object-position:var(--pos);border-radius:10px}
+            .yg-art-index-gap{height:26px}
+            .yg-art-index{height:24px;display:flex;align-items:center;color:#8f919a;font-size:13px;line-height:1.3}
+            .yg-art-button-gap{height:10px}
             </style>
             <div class="yg-art-grid """ + grid_class + """">""" + "".join(cards) + "</div>",
             unsafe_allow_html=True,
         )
         portrait_count = sum(item.get("type") == "portrait" for item in manifest["items"])
         wallpaper_count = sum(item.get("type") == "wallpaper" for item in manifest["items"])
-        st.caption(
-            f"本地索引 竖屏 {portrait_count} 张 · 壁纸 {wallpaper_count} 张 · 更新于 {manifest.get('updated_at') or '—'}"
+        st.markdown(
+            '<div class="yg-art-index-gap"></div>'
+            f'<div class="yg-art-index">本地索引　竖屏 {portrait_count} 张 · 壁纸 {wallpaper_count} 张 · '
+            f'更新于 {html.escape(str(manifest.get("updated_at") or "—"))}</div>',
+            unsafe_allow_html=True,
         )
         if refreshing_art:
             st.caption("新版焦点缩略图正在后台更新，稍后刷新页面即可看到更稳的裁切。")
+        st.markdown('<div class="yg-art-button-gap"></div>', unsafe_allow_html=True)
         if st.button("重新扫描图片", key="daily_art_rescan", use_container_width=True):
             if _block_readonly_action():
                 _readonly_notice()
@@ -1844,6 +1851,13 @@ def _save_ranked_subject(item: dict[str, Any], status: str, open_editor: bool) -
     preferred_category = _ranked_preferred_category(str(item.get("category") or "动画"))
     try:
         detail = bgm.get_subject(subject_id)
+        if item.get("precision_source") == "bangumi-rating-perspective":
+            detail = dict(detail)
+            detail["rating"] = {
+                **(detail.get("rating") or {}),
+                "score": round(float(item["score"]), 2),
+                "total": int(item.get("votes") or 0),
+            }
         db.cache_subject(subject_id, detail)
     except bgm.BangumiError:
         detail = item.get("subject") or {
@@ -1909,6 +1923,9 @@ def render_bangumi_ranking_browser() -> None:
         st.warning(f"Bangumi 排行榜暂时读取失败：{exc}")
         fetched_rows = []
     rows = fetched_rows[:page_size]
+    if category == "动画" and rows:
+        with st.spinner("正在读取 Bangumi 评分透视的两位小数评分…"):
+            rows = bgm.enrich_precise_anime_ratings(rows)
     if page > 1 and not rows:
         st.session_state.bangumi_rank_page = max(1, (len(fetched_rows) + page_size - 1) // page_size)
         st.rerun()

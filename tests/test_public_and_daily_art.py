@@ -84,6 +84,10 @@ class PublicAndDailyArtTest(unittest.TestCase):
                 self.assertEqual(built["scan_stats"]["portrait"]["supported"], 2)
                 self.assertEqual(built["scan_stats"]["portrait"]["accepted"], 1)
                 self.assertEqual(built["scan_stats"]["portrait"]["oversized"], 1)
+                with mock.patch.object(daily_art, "_homepage_asset", side_effect=AssertionError("unchanged image decoded")) as resize:
+                    rebuilt = daily_art.rebuild_manifest()
+                self.assertEqual(len(rebuilt["items"]), 1)
+                resize.assert_not_called()
             finally:
                 daily_art.LOCAL_ROOTS, daily_art.MANIFEST_PATH, daily_art.ASSET_DIR, daily_art.MAX_FILE_SIZE = old
 

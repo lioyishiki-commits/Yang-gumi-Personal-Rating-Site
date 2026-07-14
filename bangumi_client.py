@@ -4,8 +4,10 @@ from __future__ import annotations
 import html
 import json
 import re
+import threading
 import time
 import unicodedata
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -63,11 +65,14 @@ class BangumiError(RuntimeError):
 
 ROOT = Path(__file__).resolve().parent
 RANKING_CACHE_PATH = ROOT / "data" / "bangumi_ranking_cache.json"
+RATING_PRECISION_CACHE_PATH = ROOT / "data" / "bangumi_rating_precision.json"
 RANKING_CACHE_VERSION = 7
+RATING_PRECISION_CACHE_VERSION = 1
 _ranking_cache: dict[tuple[str, int, str], tuple[float, list[dict[str, Any]]]] = {}
 _ranking_window_cache: dict[tuple[str, int, int, str], tuple[float, list[dict[str, Any]]]] = {}
 _RANKING_CACHE_SECONDS = 60 * 60
 RANKING_MAX_ITEMS = 7200
+_rating_precision_lock = threading.Lock()
 
 
 def ranking_quarter_key(value: datetime | None = None) -> str:
@@ -168,6 +173,120 @@ def _request_web_page(url: str) -> str:
         return response.content.decode("utf-8", errors="replace")
     except requests.RequestException as exc:
         raise BangumiError(f"Bangumi 排行榜读取失败：{exc}") from exc
+
+
+def parse_rating_perspective(source: str) -> dict[str, Any]:
+    """Read only the public rating summary from a Bangumi /stats page."""
+    summary = source.split('id="chartCollectInterestType"', 1)[0]
+    score_match = re.search(
+        r'class="item orange"[\s\S]{0,240}?class="num">\s*([\d.]+)\s*</span>', summary
+    )
+    votes_match = re.search(
+        r'class="item sky"[\s\S]{0,240}?class="num">\s*([\d,]+)\s*</span>', summary
+    )
+    if not score_match:
+        raise BangumiError("Bangumi 评分透视没有返回公开评分")
+    return {
+        "score": round(float(score_match.group(1)), 2),
+        "votes": int(votes_match.group(1).replace(",", "")) if votes_match else None,
+    }
+
+
+def _load_rating_precision_cache() -> dict[str, Any]:
+    try:
+        payload = json.loads(RATING_PRECISION_CACHE_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        payload = {}
+    if payload.get("version") != RATING_PRECISION_CACHE_VERSION or not isinstance(payload.get("items"), dict):
+        return {"version": RATING_PRECISION_CACHE_VERSION, "updated_at": None, "items": {}}
+    return payload
+
+
+def _save_rating_precision_cache(payload: dict[str, Any]) -> None:
+    RATING_PRECISION_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    payload["version"] = RATING_PRECISION_CACHE_VERSION
+    payload["updated_at"] = datetime.now().isoformat(timespec="seconds")
+    temporary = RATING_PRECISION_CACHE_PATH.with_suffix(".tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    temporary.replace(RATING_PRECISION_CACHE_PATH)
+
+
+def _fetch_rating_perspective(subject_id: int) -> dict[str, Any]:
+    last_error: Exception | None = None
+    for attempt in range(2):
+        try:
+            source = _request_web_page(f"{WEB_BASE}/{int(subject_id)}/stats")
+            value = parse_rating_perspective(source)
+            return {
+                **value,
+                "date": datetime.now().date().isoformat(),
+                "fetched_at": datetime.now().isoformat(timespec="seconds"),
+            }
+        except BangumiError as exc:
+            last_error = exc
+            if attempt == 0:
+                time.sleep(0.25)
+    raise BangumiError(str(last_error or "Bangumi 评分透视读取失败"))
+
+
+def enrich_precise_anime_ratings(
+    items: Iterable[dict[str, Any]], *, force: bool = False, max_workers: int = 8,
+) -> list[dict[str, Any]]:
+    """Apply two-decimal scores from rating-perspective pages to Japanese anime rows.
+
+    Only ``/subject/<id>/stats`` is read.  No reviews, comments, staff, accounts or
+    other page data are requested or retained.
+    """
+    rows = [dict(item) for item in items]
+    ids = list(dict.fromkeys(
+        int(item["id"]) for item in rows if str(item.get("id") or "").isdigit()
+    ))
+    if not ids:
+        return rows
+    today = datetime.now().date().isoformat()
+    with _rating_precision_lock:
+        payload = _load_rating_precision_cache()
+        cache = payload.setdefault("items", {})
+        missing = [
+            subject_id for subject_id in ids
+            if force or str((cache.get(str(subject_id)) or {}).get("date") or "") != today
+        ]
+        if missing:
+            fetched: dict[int, dict[str, Any]] = {}
+            with ThreadPoolExecutor(max_workers=min(max(1, int(max_workers)), len(missing))) as executor:
+                futures = {executor.submit(_fetch_rating_perspective, subject_id): subject_id for subject_id in missing}
+                for future in as_completed(futures):
+                    try:
+                        fetched[futures[future]] = future.result()
+                    except (BangumiError, ValueError, TypeError):
+                        continue
+            for subject_id, value in fetched.items():
+                cache[str(subject_id)] = value
+            if fetched:
+                _save_rating_precision_cache(payload)
+        snapshot = {subject_id: dict(cache.get(str(subject_id)) or {}) for subject_id in ids}
+    for item in rows:
+        subject_id = int(item.get("id") or 0)
+        precise = snapshot.get(subject_id) or {}
+        if precise.get("score") is not None:
+            item["score"] = round(float(precise["score"]), 2)
+            item["precision_source"] = "bangumi-rating-perspective"
+        if precise.get("votes") is not None:
+            item["votes"] = int(precise["votes"])
+    return rows
+
+
+def cached_ranking_subject_ids(category: str = "动画") -> list[int]:
+    """Return known ranking IDs without any network request."""
+    payload = _load_ranking_disk_cache(ranking_quarter_key(), allow_stale=True)
+    category_cache = (payload.get("categories") or {}).get(category) or {}
+    candidates = [item for item in category_cache.get("items", []) if isinstance(item, dict)]
+    for window in (category_cache.get("windows") or {}).values():
+        if isinstance(window, dict):
+            candidates.extend(item for item in window.get("items", []) if isinstance(item, dict))
+    return list(dict.fromkeys(
+        int(item["id"]) for item in candidates if str(item.get("id") or "").isdigit()
+    ))
 
 
 def _strip_tags(value: str) -> str:

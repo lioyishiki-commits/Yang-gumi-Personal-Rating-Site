@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parent
 SEASONAL_POSTER_ROOT = ROOT / "static" / "seasonal_posters"
 SEASONAL_SOURCE_PATH = ROOT / "data" / "seasonal_title_sources.json"
 MISSING_COVER_REFRESH_PATH = ROOT / "data" / "missing_cover_refresh.json"
+RATING_PRECISION_REFRESH_PATH = ROOT / "data" / "rating_precision_refresh.json"
 KISSSUB_SCHEDULE_URL = "http://www.kisssub.org/"
 YUC_SEASON_BASE_URL = "https://yuc.wiki"
 KISSSUB_HEADERS = {
@@ -938,6 +939,51 @@ def refresh_missing_anime_covers_if_due(value: date | datetime | None = None) ->
     return True, refresh_missing_anime_covers()
 
 
+def refresh_precise_anime_ratings() -> int:
+    """Refresh two-decimal scores for known, confirmed Japanese animations only."""
+    works_by_subject: dict[int, list[dict[str, Any]]] = {}
+    for work in db.list_works():
+        if work.get("type") != "动画" or not str(work.get("bangumi_id") or "").isdigit():
+            continue
+        try:
+            subject = json.loads(str(work.get("bangumi_raw_json") or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            subject = {}
+        if not subject or bgm.japanese_source_status(subject) != "confirmed":
+            continue
+        works_by_subject.setdefault(int(work["bangumi_id"]), []).append(work)
+    subject_ids = list(dict.fromkeys([*bgm.cached_ranking_subject_ids("动画"), *works_by_subject]))
+    refreshed = bgm.enrich_precise_anime_ratings(
+        [{"id": subject_id} for subject_id in subject_ids], force=True, max_workers=8,
+    )
+    updated = 0
+    for item in refreshed:
+        if item.get("precision_source") != "bangumi-rating-perspective":
+            continue
+        for work in works_by_subject.get(int(item["id"]), []):
+            db.update_bangumi(int(work["id"]), {
+                "bangumi_score": round(float(item["score"]), 2),
+                "bangumi_total_votes": int(item.get("votes") or 0),
+            }, include_local_titles=False)
+            updated += 1
+    RATING_PRECISION_REFRESH_PATH.parent.mkdir(parents=True, exist_ok=True)
+    RATING_PRECISION_REFRESH_PATH.write_text(json.dumps({
+        "date": datetime.now().date().isoformat(), "known_subjects": len(subject_ids),
+        "updated_local_works": updated, "finished_at": datetime.now().isoformat(timespec="seconds"),
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    return len(subject_ids)
+
+
+def refresh_precise_anime_ratings_if_due(value: date | datetime | None = None) -> tuple[bool, int]:
+    today = (value or datetime.now()).date().isoformat()
+    try:
+        if json.loads(RATING_PRECISION_REFRESH_PATH.read_text(encoding="utf-8")).get("date") == today:
+            return False, 0
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        pass
+    return True, refresh_precise_anime_ratings()
+
+
 def _midnight_refresh_scheduler() -> None:
     while True:
         now = datetime.now()
@@ -949,6 +995,10 @@ def _midnight_refresh_scheduler() -> None:
             pass
         try:
             refresh_missing_anime_covers_if_due(datetime.now())
+        except Exception:
+            pass
+        try:
+            refresh_precise_anime_ratings_if_due(datetime.now())
         except Exception:
             pass
 
@@ -963,6 +1013,10 @@ def start_midnight_refresh_scheduler() -> None:
         threading.Thread(
             target=lambda: refresh_missing_anime_covers_if_due(datetime.now()),
             name="yanggumi-cover-catchup", daemon=True,
+        ).start()
+        threading.Thread(
+            target=lambda: refresh_precise_anime_ratings_if_due(datetime.now()),
+            name="yanggumi-rating-precision-catchup", daemon=True,
         ).start()
         threading.Thread(target=_midnight_refresh_scheduler, name="yanggumi-season-midnight", daemon=True).start()
 

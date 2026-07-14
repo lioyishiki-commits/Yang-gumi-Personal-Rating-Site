@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parent
 MANIFEST_PATH = ROOT / "data" / "image_manifest.json"
 SETTINGS_PATH = ROOT / "data" / "daily_art_settings.json"
 ASSET_DIR = ROOT / "static" / "daily_art"
-MANIFEST_VERSION = 9
+MANIFEST_VERSION = 10
 DEFAULT_LOCAL_ROOTS = {
     "portrait": Path(
         os.getenv("YANGGUMI_PORTRAIT_DIR")
@@ -44,7 +44,8 @@ def load_source_folders() -> dict[str, Path]:
 
 
 LOCAL_ROOTS = load_source_folders()
-REFRESH_QUOTAS = {"portrait": 300, "wallpaper": 60}
+REFRESH_QUOTAS = {"portrait": 400, "wallpaper": 100}
+MAX_NEW_ASSETS_PER_RESCAN = 3
 ALLOWED_SUFFIXES = {".jpg", ".jpeg", ".jfif", ".png", ".webp", ".avif", ".bmp", ".gif"}
 MAX_FILE_SIZE = 100 * 1024 * 1024
 MAX_INDEX_ITEMS = 500
@@ -305,7 +306,11 @@ def _homepage_asset(image: Image.Image, kind: str, focus: str) -> Image.Image:
 
 
 def rebuild_manifest(only_kind: str | None = None) -> dict[str, Any]:
-    """Build the full cache, or refresh only one selected source folder."""
+    """Refresh the index while reusing every unchanged cached image.
+
+    Re-scanning an existing library should be a metadata operation.  Source
+    images are decoded and resized only when they are new or have changed.
+    """
     if only_kind is not None and only_kind not in LOCAL_ROOTS:
         raise ValueError(f"Unsupported daily art source: {only_kind}")
     _refresh_lock.acquire()
@@ -315,9 +320,16 @@ def rebuild_manifest(only_kind: str | None = None) -> dict[str, Any]:
         entries: list[dict[str, Any]] = []
         scan_stats: dict[str, dict[str, int]] = {}
         previous: dict[str, Any] = {}
+        try:
+            previous = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            previous = {}
+        previous_items = [item for item in previous.get("items", []) if isinstance(item, dict)]
+        previous_by_path = {
+            str(item.get("path") or ""): item for item in previous_items if item.get("path")
+        }
         if only_kind is not None:
             try:
-                previous = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
                 scan_stats.update({
                     key: {
                         "files_checked": int(value.get("files_checked") or 0),
@@ -328,7 +340,7 @@ def rebuild_manifest(only_kind: str | None = None) -> dict[str, Any]:
                     for key, value in (previous.get("scan_stats") or {}).items()
                     if key in LOCAL_ROOTS and isinstance(value, dict)
                 })
-                for item in previous.get("items", [])[:MAX_INDEX_ITEMS]:
+                for item in previous_items[:MAX_INDEX_ITEMS]:
                     if item.get("type") == only_kind or item.get("type") not in LOCAL_ROOTS:
                         continue
                     asset = ASSET_DIR / Path(str(item.get("asset") or "")).name
@@ -345,7 +357,29 @@ def rebuild_manifest(only_kind: str | None = None) -> dict[str, Any]:
                 continue
             scanned_paths = list(_iter_shallow(root) or [])
             paths = [path for path in scanned_paths if path.suffix.casefold() in ALLOWED_SUFFIXES]
-            random.SystemRandom().shuffle(paths)
+            if previous_items:
+                reusable_paths: list[Path] = []
+                changed_paths: list[Path] = []
+                for path in paths:
+                    try:
+                        stat = path.stat()
+                        cached = previous_by_path.get(str(path)) or {}
+                        previous_asset_name = Path(str(cached.get("asset") or "")).name
+                        previous_cached_asset = ASSET_DIR / previous_asset_name if previous_asset_name else None
+                        unchanged = bool(
+                            previous_cached_asset
+                            and previous_cached_asset.exists()
+                            and int(cached.get("size") or -1) == int(stat.st_size)
+                            and abs(float(cached.get("mtime") or 0) - float(stat.st_mtime)) < 0.001
+                        )
+                    except OSError:
+                        unchanged = False
+                    (reusable_paths if unchanged else changed_paths).append(path)
+                random.SystemRandom().shuffle(reusable_paths)
+                random.SystemRandom().shuffle(changed_paths)
+                paths = changed_paths[:MAX_NEW_ASSETS_PER_RESCAN] + reusable_paths
+            else:
+                random.SystemRandom().shuffle(paths)
             accepted = 0
             unreadable = 0
             oversized = 0
@@ -361,15 +395,24 @@ def rebuild_manifest(only_kind: str | None = None) -> dict[str, Any]:
                         continue
                     asset_name = _asset_name(path, stat.st_mtime)
                     cached_asset = ASSET_DIR / asset_name
-                    with Image.open(path) as source:
-                        source.verify()
+                    cached = previous_by_path.get(str(path)) or {}
+                    previous_asset_name = Path(str(cached.get("asset") or "")).name
+                    previous_cached_asset = ASSET_DIR / previous_asset_name if previous_asset_name else cached_asset
+                    if (
+                        previous_cached_asset.exists()
+                        and int(cached.get("size") or -1) == int(stat.st_size)
+                        and abs(float(cached.get("mtime") or 0) - float(stat.st_mtime)) < 0.001
+                    ):
+                        entries.append({**cached, "path": str(path), "asset": f"daily_art/{previous_cached_asset.name}"})
+                        accepted += 1
+                        continue
                     with Image.open(path) as source:
                         image = ImageOps.exif_transpose(source).convert("RGB")
+                        image.load()
                         width, height = image.size
                         focus = _focus_position(_trim_plain_border(image))
-                        if not cached_asset.exists():
-                            asset_image = _homepage_asset(image, kind, focus)
-                            asset_image.save(cached_asset, "WEBP", quality=80, method=4)
+                        asset_image = _homepage_asset(image, kind, focus)
+                        asset_image.save(cached_asset, "WEBP", quality=80, method=3)
                     entries.append({
                         "path": str(path), "size": stat.st_size, "width": width, "height": height,
                         "type": kind, "mtime": stat.st_mtime, "asset": f"daily_art/{asset_name}",

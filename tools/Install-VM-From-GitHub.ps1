@@ -1,3 +1,5 @@
+param([switch]$CleanInstall)
+
 $ErrorActionPreference = 'Stop'
 
 $Branch = 'agent/fix-new-pc-deployment'
@@ -33,7 +35,7 @@ function Local-Image-Folder([string[]]$Names) {
     return $null
 }
 
-$Result = [ordered]@{ status = 'running'; source = 'github'; branch = $Branch; started_at = (Get-Date).ToString('s') }
+$Result = [ordered]@{ status = 'running'; source = 'github'; branch = $Branch; clean_install = [bool]$CleanInstall; started_at = (Get-Date).ToString('s') }
 Write-Json $Report $Result
 try {
     New-Item -ItemType Directory -Path $Temp, $Extract -Force | Out-Null
@@ -60,14 +62,38 @@ try {
     } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     Start-Sleep -Seconds 2
 
+    if ($CleanInstall) {
+        $Removed = @()
+        foreach ($Root in $Roots) {
+            $RootPath = [IO.Path]::GetFullPath($Root).TrimEnd('\') + '\'
+            foreach ($Directory in @(Get-ChildItem -LiteralPath $Root -Directory -ErrorAction SilentlyContinue)) {
+                $Resolved = [IO.Path]::GetFullPath($Directory.FullName)
+                if (
+                    $Directory.Name -like 'Yang-gumi*' -and
+                    $Resolved.StartsWith($RootPath, [StringComparison]::OrdinalIgnoreCase) -and
+                    (Test-Path -LiteralPath (Join-Path $Resolved 'app.py'))
+                ) {
+                    Remove-Item -LiteralPath $Resolved -Recurse -Force
+                    $Removed += $Resolved
+                }
+            }
+        }
+        $Result.removed_installs = $Removed
+        $Old = $null
+    }
+
     if (Test-Path -LiteralPath $Target) {
-        $Backup = "$Target-backup-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
-        Move-Item -LiteralPath $Target -Destination $Backup
-        $Result.previous_target = $Backup
+        if ($CleanInstall) {
+            Remove-Item -LiteralPath $Target -Recurse -Force
+        } else {
+            $Backup = "$Target-backup-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+            Move-Item -LiteralPath $Target -Destination $Backup
+            $Result.previous_target = $Backup
+        }
     }
     Copy-Item -LiteralPath $Source.FullName -Destination $Target -Recurse
 
-    if ($Old) {
+    if ($Old -and -not $CleanInstall) {
         $OldPath = $Old.FullName
         Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
             $_.Name -in @('python.exe', 'pythonw.exe', 'py.exe') -and $_.CommandLine -and $_.CommandLine.Contains($OldPath)
