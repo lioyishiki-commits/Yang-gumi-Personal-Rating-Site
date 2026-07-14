@@ -31,9 +31,12 @@ class BangumiCategoryTest(unittest.TestCase):
                     "score": 9.17, "votes": 9952, "date": bgm.datetime.now().date().isoformat(),
                     "fetched_at": bgm.datetime.now().isoformat(timespec="seconds"),
                 }) as fetch:
-                    first = bgm.enrich_precise_anime_ratings([{"id": 326, "score": 9.2}])
+                    first = bgm.enrich_precise_anime_ratings([
+                        {"id": 326, "score": 9.2, "rating": {"score": 9.2, "total": 9900}}
+                    ])
                     second = bgm.enrich_precise_anime_ratings([{"id": 326, "score": 9.2}])
                 self.assertEqual(first[0]["score"], 9.17)
+                self.assertEqual(first[0]["rating"], {"score": 9.17, "total": 9952})
                 self.assertEqual(second[0]["votes"], 9952)
                 fetch.assert_called_once_with(326)
             finally:

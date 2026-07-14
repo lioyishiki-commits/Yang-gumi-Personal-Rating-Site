@@ -1669,6 +1669,18 @@ def _render_search_notice(prefix: str) -> None:
     {"warning": st.warning, "info": st.info, "error": st.error}.get(level, st.caption)(message)
 
 
+def _enrich_search_animation_ratings(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Use the same /stats precision cache for animation search cards."""
+    animation_rows = [item for item in results if int(item.get("type") or 0) == 2]
+    if not animation_rows:
+        return results
+    precise_by_id = {
+        int(item.get("id") or 0): item
+        for item in bgm.enrich_precise_anime_ratings(animation_rows)
+    }
+    return [precise_by_id.get(int(item.get("id") or 0), item) for item in results]
+
+
 def _search_add_bangumi() -> None:
     query = (st.session_state.get("add_query") or "").strip()
     category = st.session_state.get("add_search_category") or "全部"
@@ -1682,7 +1694,8 @@ def _search_add_bangumi() -> None:
             query, category,
             fallback_keywords=[draft.get("title"), draft.get("original_title"), draft.get("bangumi_name_cn"), draft.get("bangumi_name")],
         )
-        st.session_state.add_results = bgm.rank_search_results(query, raw_results)
+        ranked_results = bgm.rank_search_results(query, raw_results)
+        st.session_state.add_results = _enrich_search_animation_ratings(ranked_results)
         if st.session_state.add_results:
             _set_search_notice("add_search")
         else:
@@ -1706,7 +1719,8 @@ def _search_match_bangumi(selected: dict[str, Any]) -> None:
             query, category,
             fallback_keywords=[selected.get("title"), selected.get("original_title"), selected.get("bangumi_name_cn"), selected.get("bangumi_name")],
         )
-        st.session_state.match_results = bgm.rank_search_results(query, raw_results)
+        ranked_results = bgm.rank_search_results(query, raw_results)
+        st.session_state.match_results = _enrich_search_animation_ratings(ranked_results)
         if st.session_state.match_results:
             _set_search_notice("match_search")
         else:
@@ -1725,7 +1739,8 @@ def _search_public_bangumi() -> None:
         return
     try:
         raw_results = bgm.search_subjects_by_category(query, category)
-        st.session_state.bangumi_public_results = bgm.rank_search_results(query, raw_results)
+        ranked_results = bgm.rank_search_results(query, raw_results)
+        st.session_state.bangumi_public_results = _enrich_search_animation_ratings(ranked_results)
         if st.session_state.bangumi_public_results:
             _set_search_notice("bangumi_public_search")
         else:
@@ -1755,6 +1770,10 @@ def page_add() -> None:
         def choose(subject, normalized):
             try:
                 detail = bgm.get_subject(subject["id"]); db.cache_subject(subject["id"], detail)
+                if subject.get("precision_source"):
+                    detail["rating"] = dict(detail.get("rating") or {})
+                    detail["rating"]["score"] = (subject.get("rating") or {}).get("score") or subject.get("score")
+                    detail["rating"]["total"] = (subject.get("rating") or {}).get("total") or subject.get("votes")
                 st.session_state.new_draft = bgm.suggested_local_fields(detail, query, category); st.session_state.add_results=[]; st.rerun()
             except bgm.BangumiError as exc: st.error(str(exc))
         render_subject_result_views(st.session_state.get("add_results", []), "add_subject", choose, category)

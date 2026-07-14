@@ -286,8 +286,14 @@ def enrich_precise_anime_ratings(
         if precise.get("score") is not None:
             item["score"] = round(float(precise["score"]), 2)
             item["precision_source"] = "bangumi-rating-perspective"
+            if isinstance(item.get("rating"), dict):
+                item["rating"] = dict(item["rating"])
+                item["rating"]["score"] = item["score"]
         if precise.get("votes") is not None:
             item["votes"] = int(precise["votes"])
+            if isinstance(item.get("rating"), dict):
+                item["rating"] = dict(item["rating"])
+                item["rating"]["total"] = item["votes"]
     return rows
 
 
