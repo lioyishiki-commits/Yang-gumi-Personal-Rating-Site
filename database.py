@@ -410,6 +410,15 @@ def get_work_by_bangumi_id(bangumi_id: int) -> dict[str, Any] | None:
     return get_work(int(row[0])) if row else None
 
 
+def merge_existing_bangumi_draft(fields: dict[str, Any]) -> dict[str, Any]:
+    """Reuse an existing Bangumi-bound record without losing its local fields."""
+    bangumi_id = fields.get("bangumi_id")
+    existing = get_work_by_bangumi_id(int(bangumi_id)) if bangumi_id else None
+    if not existing:
+        return dict(fields)
+    return {**existing, **fields, "tags": existing.get("tags", []), "_existing_work_id": int(existing["id"])}
+
+
 def update_work_status(work_id: int, status: str) -> None:
     with connect() as conn:
         conn.execute(
