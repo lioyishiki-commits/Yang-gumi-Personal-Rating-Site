@@ -1,5 +1,7 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
+/.yanggumi-update-state.json
+/backups/update_restore_points/
 *.py[codz]
 *$py.class
 

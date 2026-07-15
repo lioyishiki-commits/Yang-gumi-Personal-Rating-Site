@@ -32,6 +32,14 @@ Python 官方下载页：https://www.python.org/downloads/windows/
 
 在虚拟机中使用时，建议至少分配 2 个处理器核心和 4 GB 内存，并确认虚拟机可以正常访问互联网。无 VPN 或代理不会影响本地条目管理，但 Bangumi 搜索、季度数据和封面下载可能因网络状况变慢；等待片刻或稍后重试即可。
 
+## Windows：手动增量更新
+
+需要检查新版本时，手动双击 **`检查并更新 Yang-gumi.bat`**。程序会显示当前版本；没有更新时只提示“当前已是最新版”，有更新时会显示目标版本并等待输入 `Y` 或 `N`。选择 `Y` 后只下载 GitHub 中发生变化的程序文件，不会重新下载整个项目，也不会覆盖 `data/`、`backups/`、私人配置或本地图片。
+
+每次更新前都会在 `backups/update_restore_points/` 创建返回点，并保存评分数据库快照；更新下载或 Python 校验失败时会自动恢复。若更新后手动使用时发现异常，可双击 **`恢复最近一次更新.bat`** 返回最近一次更新前。更新程序不会定时运行，也不会后台自动更新。
+
+版本号从 `1.0.0` 开始：破坏性或不兼容更新提升主版本，新功能或较大范围更新提升次版本，修复与小幅调整提升补丁版本。
+
 ## 局域网只读分享
 
 1. 在主人电脑的项目目录中双击 **`启动只读分享.bat`**，首次运行时允许 Windows 防火墙放行专用网络的 8502 端口。
@@ -78,9 +86,7 @@ chmod +x install_and_start.sh
 - [部署与迁移](docs/DEPLOYMENT.md)
 - [使用说明](docs/USER_GUIDE.md)
 - [隐私说明](docs/PRIVACY.md)
-- [`docs/Yang-gumi_新电脑部署与完整使用说明_20260704.docx`](docs/Yang-gumi_新电脑部署与完整使用说明_20260704.docx)（适合离线阅读）
 - [`docs/Yang-gumi配置说明.docx`](docs/Yang-gumi配置说明.docx)（完整修订版，不删减原说明）
-- [`docs/Yang-gumi网站视频介绍与部署使用文稿.md`](docs/Yang-gumi网站视频介绍与部署使用文稿.md)（18分钟中文视频口播、画面与注意事项）
 - [第三方组件声明](THIRD_PARTY_NOTICES.md)
 - [更新记录](CHANGELOG.md)
 
