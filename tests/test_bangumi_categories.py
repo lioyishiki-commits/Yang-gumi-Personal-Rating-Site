@@ -99,6 +99,7 @@ class BangumiCategoryTest(unittest.TestCase):
         fields = bgm.suggested_local_fields(anime, "空之境界", "动画")
         self.assertEqual(fields["type"], "动画")
         self.assertEqual(fields["subtype"], "剧场版")
+        self.assertEqual(fields["status"], "已看")
         self.assertEqual(fields["year"], 2007)
 
         web = {"id": 4, "type": 2, "name": "WEBアニメ", "platform": "WEB", "images": {}, "rating": {}}

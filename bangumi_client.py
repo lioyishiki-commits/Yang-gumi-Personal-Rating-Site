@@ -928,6 +928,7 @@ def suggested_local_fields(
         "original_title": normalized["original_title"],
         "type": local_category,
         "subtype": infer_local_subtype(subject, local_category),
+        "status": "已看",
         "release_date": normalized["bangumi_date"],
         "year": int(normalized["bangumi_date"][:4]) if normalized["bangumi_date"][:4].isdigit() else None,
         **normalized,
