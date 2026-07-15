@@ -1,6 +1,8 @@
 ﻿@echo off
 setlocal
 chcp 65001 >nul
+set "PYTHONUTF8=1"
+set "PYTHONIOENCODING=utf-8"
 title Yang-gumi 手动更新程序
 cd /d "%~dp0"
 
