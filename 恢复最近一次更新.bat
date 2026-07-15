@@ -1,4 +1,4 @@
-@echo off
+﻿@echo off
 setlocal
 chcp 65001 >nul
 title Yang-gumi 恢复更新前版本
