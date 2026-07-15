@@ -1648,7 +1648,8 @@ def render_work_form(existing: dict[str, Any] | None = None) -> None:
         )
         data = {**draft, **component_values, "custom_scores_json": custom_scores_json, "score_total":score_total, "score_mode":"auto" if automatic else "manual", "title":title.strip(), "original_title":original_title.strip(), "type":work_type, "subtype":subtype, "status":status, "start_date":start_date, "finish_date":finish_date, "release_date":release_date, "year":year or None, "short_review":short_review, "long_review":long_review, "private_note":private_note, "favorite_characters":favorite_characters, "favorite_episode":favorite_episode, "favorite_quote":favorite_quote, "cover_path":cover_path, "cover_url":cover_url, "resource_path":resource_path}
         try:
-            work_id = db.save_work(data, preserved_private_tags, existing.get("id") if existing else None)
+            target_id = existing.get("id") if existing else draft.get("_existing_work_id")
+            work_id = db.save_work(data, preserved_private_tags, target_id)
             st.session_state.pop("new_draft", None); st.session_state.pop("edit_id", None)
             for key in ("lib_query", "lib_type", "lib_status", "lib_subtype", "lib_year", "lib_tags", "lib_mine", "lib_bgm", "lib_direction", "lib_abs"):
                 st.session_state.pop(key, None)
@@ -1774,7 +1775,9 @@ def page_add() -> None:
                     detail["rating"] = dict(detail.get("rating") or {})
                     detail["rating"]["score"] = (subject.get("rating") or {}).get("score") or subject.get("score")
                     detail["rating"]["total"] = (subject.get("rating") or {}).get("total") or subject.get("votes")
-                st.session_state.new_draft = bgm.suggested_local_fields(detail, query, category); st.session_state.add_results=[]; st.rerun()
+                fields = bgm.suggested_local_fields(detail, query, category)
+                st.session_state.new_draft = db.merge_existing_bangumi_draft(fields)
+                st.session_state.add_results=[]; st.rerun()
             except bgm.BangumiError as exc: st.error(str(exc))
         render_subject_result_views(st.session_state.get("add_results", []), "add_subject", choose, category)
     st.subheader("本地记录")

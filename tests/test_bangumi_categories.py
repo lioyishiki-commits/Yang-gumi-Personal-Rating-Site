@@ -111,6 +111,28 @@ class BangumiCategoryTest(unittest.TestCase):
         fields = bgm.suggested_local_fields(novel, "凉宫春日", "轻小说")
         self.assertEqual((fields["type"], fields["subtype"]), ("轻小说", "轻小说"))
 
+    def test_existing_bangumi_draft_reuses_record_and_preserves_local_fields(self):
+        original_paths = db.DATA_DIR, db.DB_PATH, db.EXPORT_DIR
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db.DATA_DIR, db.DB_PATH, db.EXPORT_DIR = root, root / "acgn.db", root / "exports"
+            try:
+                db.init_db()
+                work_id = db.save_work({
+                    "title": "旧标题", "type": "动画", "status": "在看", "bangumi_id": 77,
+                    "private_note": "保留笔记", "short_review": "保留短评",
+                }, [("私人标签", "其他")])
+                draft = db.merge_existing_bangumi_draft({
+                    "title": "新标题", "type": "动画", "status": "已看", "bangumi_id": 77,
+                })
+                self.assertEqual(draft["_existing_work_id"], work_id)
+                self.assertEqual(draft["private_note"], "保留笔记")
+                self.assertEqual(draft["short_review"], "保留短评")
+                self.assertEqual(draft["status"], "已看")
+                self.assertEqual(draft["tags"][0]["name"], "私人标签")
+            finally:
+                db.DATA_DIR, db.DB_PATH, db.EXPORT_DIR = original_paths
+
     def test_add_and_match_pages_expose_category_search(self):
         original_paths = db.DATA_DIR, db.DB_PATH, db.EXPORT_DIR
         with tempfile.TemporaryDirectory() as temp_dir:
