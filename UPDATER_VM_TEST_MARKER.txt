@@ -1,0 +1,1 @@
+Temporary live-update marker for the 2026-07-30 VMware validation.
