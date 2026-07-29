@@ -11,6 +11,8 @@ permissions:
 jobs:
   unittest:
     runs-on: windows-latest
+    env:
+      PYTHONUTF8: "1"
     strategy:
       matrix:
         python-version: ["3.11", "3.13"]
