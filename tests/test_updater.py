@@ -90,6 +90,39 @@ class UpdaterTest(unittest.TestCase):
         self.assertEqual(state["version"], "1.1.0")
         self.assertEqual(state["commit"], "v110-head")
 
+    def test_retired_state_commit_falls_back_to_matching_official_tag(self):
+        new_app = b"VALUE = 'official-update'\n"
+        updater.STATE_FILE.write_text(json.dumps({
+            "version": "1.0.0",
+            "commit": "retired-test-commit",
+            "level": "patch",
+        }), encoding="utf-8")
+        diverged = {"status": "diverged", "files": []}
+        official_compare = {
+            "status": "ahead",
+            "commits": [{"commit": {"message": "fix: official update"}}],
+            "files": [{
+                "filename": "app.py", "status": "modified",
+                "sha": blob_sha(new_app), "changes": 1,
+            }],
+        }
+        with (
+            patch.object(updater, "_head_commit", return_value="official-head"),
+            patch.object(updater, "_remote_version", return_value="1.0.1"),
+            patch.object(updater, "_tag_commit", return_value="official-v100") as tag_commit,
+            patch.object(updater, "_request_json", side_effect=[diverged, official_compare]) as request_json,
+            patch.object(updater, "_download", return_value=new_app),
+            patch.dict(os.environ, {"YANGGUMI_UPDATE_SKIP_PROMPT": "Y"}),
+        ):
+            self.assertEqual(updater.check_and_update(), 0)
+        tag_commit.assert_called_once_with("1.0.0")
+        self.assertEqual(request_json.call_count, 2)
+        self.assertEqual((self.root / "app.py").read_bytes(), new_app)
+        self.assertEqual((self.root / "data" / "acgn.db").read_bytes(), b"private-db")
+        state = json.loads(updater.STATE_FILE.read_text(encoding="utf-8"))
+        self.assertEqual(state["version"], "1.0.1")
+        self.assertEqual(state["commit"], "official-head")
+
     def test_user_data_paths_are_never_remote_update_targets(self):
         protected = (
             "data/acgn.db",
