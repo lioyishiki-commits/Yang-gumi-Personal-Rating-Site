@@ -4,7 +4,6 @@ from __future__ import annotations
 import os
 import sqlite3
 import subprocess
-import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -75,10 +74,7 @@ def schedule_removal(root: Path = ROOT) -> None:
     script_path = Path(tempfile.gettempdir()) / f"yanggumi-uninstall-{os.getpid()}.ps1"
     script_path.write_text(cleanup_script(validate_install_root(root), os.getpid()), encoding="utf-8-sig")
     subprocess.Popen(
-        [
-            "powershell.exe", "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass",
-            "-File", str(script_path),
-        ],
+        ["powershell.exe", "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script_path)],
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         close_fds=True,
     )
@@ -105,11 +101,7 @@ def main() -> int:
             return 0
         saved_path: Path | None = None
         if save:
-            selected = filedialog.askdirectory(
-                title="选择 Yang-gumi 数据保存位置",
-                mustexist=True,
-                parent=window,
-            )
+            selected = filedialog.askdirectory(title="选择 Yang-gumi 数据保存位置", mustexist=True, parent=window)
             if not selected:
                 return 0
             saved_path = backup_database_to(Path(selected))

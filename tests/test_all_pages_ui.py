@@ -12,6 +12,22 @@ class AllPagesUiTest(unittest.TestCase):
         self.assertIn(".yg-season-progress{{position:absolute;bottom:5px", source)
         self.assertIn(".yg-season-live-stage{{position:relative;height:565px", source)
 
+    def test_season_status_buttons_are_exclusive_in_the_live_carousel(self):
+        source = Path(__file__).parents[1].joinpath("app.py").read_text(encoding="utf-8")
+        self.assertIn("function setExclusiveSeasonStatus(card, nextStatus)", source)
+        self.assertIn(
+            "link.classList.remove('seen-active', 'watching-active', 'abandon-active')",
+            source,
+        )
+        self.assertIn("'已看': '已完成'", source)
+        self.assertIn("'在看': '已追番'", source)
+        self.assertIn("'抛弃': '已弃番'", source)
+
+    def test_owner_data_page_contains_full_xlsx_export(self):
+        source = Path(__file__).parents[1].joinpath("app.py").read_text(encoding="utf-8")
+        self.assertIn('"导出全部评分明细 XLSX"', source)
+        self.assertIn('key="owner_analysis_xlsx"', source)
+
     PAGES = (
         "首页",
         "条目库",

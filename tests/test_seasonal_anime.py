@@ -26,34 +26,16 @@ class SeasonalAnimeTest(unittest.TestCase):
     def setUp(self):
         self.original_paths = db.DATA_DIR, db.DB_PATH, db.EXPORT_DIR
         self.original_source_path = seasonal.SEASONAL_SOURCE_PATH
-        self.original_cover_refresh_path = seasonal.MISSING_COVER_REFRESH_PATH
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name)
         db.DATA_DIR, db.DB_PATH, db.EXPORT_DIR = root, root / "acgn.db", root / "exports"
         seasonal.SEASONAL_SOURCE_PATH = root / "seasonal_title_sources.json"
-        seasonal.MISSING_COVER_REFRESH_PATH = root / "missing_cover_refresh.json"
         db.init_db()
 
     def tearDown(self):
         db.DATA_DIR, db.DB_PATH, db.EXPORT_DIR = self.original_paths
         seasonal.SEASONAL_SOURCE_PATH = self.original_source_path
-        seasonal.MISSING_COVER_REFRESH_PATH = self.original_cover_refresh_path
         self.temp.cleanup()
-
-    def test_midnight_cover_refresh_only_fills_empty_bound_anime(self):
-        missing_id = db.save_work({"title": "测试动画", "type": "动画", "bangumi_id": 101})
-        existing_id = db.save_work({
-            "title": "已有封面", "type": "动画", "bangumi_id": 102,
-            "bangumi_image_url": "https://example.test/existing.jpg",
-        })
-        db.save_work({"title": "不是动画", "type": "游戏", "bangumi_id": 103})
-        with patch.object(seasonal.bgm, "get_subject", return_value=subject(101)) as fetch:
-            self.assertEqual(seasonal.refresh_missing_anime_covers(), 1)
-        fetch.assert_called_once_with(101)
-        self.assertEqual(db.get_work(missing_id)["bangumi_image_url"], "https://example.test/poster.jpg")
-        self.assertEqual(db.get_work(existing_id)["bangumi_image_url"], "https://example.test/existing.jpg")
-        ran, count = seasonal.refresh_missing_anime_covers_if_due(datetime.now())
-        self.assertEqual((ran, count), (False, 0))
 
     def test_quarter_boundaries(self):
         expected = {
@@ -295,18 +277,23 @@ class SeasonalAnimeTest(unittest.TestCase):
         cache = db.list_seasonal_anime(2026, "Q2")[0]
         work_id, should_edit = seasonal.set_candidate_status(cache["id"], "在看")
         self.assertFalse(should_edit)
-        self.assertEqual(db.get_work(work_id)["score_total"], None)
+        watching = db.get_work(work_id)
+        self.assertEqual(watching["score_total"], None)
+        self.assertEqual(watching["status"], "在看")
         db.save_work({**db.get_work(work_id), "status": "已看", "score_total": 8.88,
                       "short_review": "保留短评", "start_date": "2026-04-03", "finish_date": "2026-06-20"}, work_id=work_id)
         _, should_edit = seasonal.set_candidate_status(cache["id"], "弃置")
         saved = db.get_work(work_id)
         self.assertTrue(should_edit)
+        self.assertEqual(saved["status"], "弃置")
         self.assertEqual(saved["score_total"], 8.88)
         self.assertEqual(saved["short_review"], "保留短评")
         self.assertEqual(saved["start_date"], "2026-04-03")
         self.assertEqual(saved["finish_date"], "2026-06-20")
         _, should_edit_again = seasonal.set_candidate_status(cache["id"], "弃置")
         self.assertFalse(should_edit_again)
+        seasonal.set_candidate_status(cache["id"], "已看")
+        self.assertEqual(db.get_work(work_id)["status"], "已看")
 
     def test_sync_meta_prevents_implicit_repeat_decision(self):
         db.mark_seasonal_sync(2026, "Q2", "success")
@@ -323,6 +310,22 @@ class SeasonalAnimeTest(unittest.TestCase):
         self.assertFalse(changed)
         self.assertEqual((season["season_code"], count), ("Q3", 0))
         refresh.assert_not_called()
+
+    def test_startup_catchup_runs_in_a_background_thread(self):
+        original_started = seasonal._scheduler_started
+        seasonal._scheduler_started = False
+        try:
+            with patch("seasonal_service.threading.Thread") as thread:
+                seasonal.start_midnight_refresh_scheduler()
+            targets = [call.kwargs.get("target") for call in thread.call_args_list]
+            self.assertIn(seasonal._current_season_catchup, targets)
+            self.assertEqual(thread.return_value.start.call_count, 4)
+        finally:
+            seasonal._scheduler_started = original_started
+
+    def test_background_season_catchup_does_not_escape_network_errors(self):
+        with patch("seasonal_service.refresh_current_season_if_due", side_effect=RuntimeError("offline")):
+            seasonal._current_season_catchup()
 
     def test_quarter_opening_refreshes_even_after_previous_quarter_sync(self):
         now = datetime(2026, 7, 1, 0, 0, 1)

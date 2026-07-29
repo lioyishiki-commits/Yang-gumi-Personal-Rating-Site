@@ -245,6 +245,16 @@ public_data.json
 *.tmp
 work/
 artifacts/
+logs/
+static/share_assets/
+tools/xpos/
+tools/streamlit_modern_compat/
+tools/hostc_runtime/
+tools/expose/
+tools/wormhole/
+tools/cloudflared.exe
+ShiKiShare/
+ShiKiShare.exe
 
 # Local launcher and tunnel output
 *.out.log

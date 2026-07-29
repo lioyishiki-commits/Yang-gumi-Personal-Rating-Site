@@ -15,14 +15,14 @@ class FilteringTest(unittest.TestCase):
     def test_positive_difference_filters(self):
         diff = flt.calculate_score_diff({"score_total": 8.7, "bangumi_score": 7.5})
         self.assertEqual(diff, 1.2)
-        self.assertEqual(flt.format_diff(diff), "+1.2")
+        self.assertEqual(flt.format_diff(diff), "+1.20")
         self.assertTrue(flt.diff_direction_matches(diff, "我高于 Bangumi"))
         self.assertTrue(flt.diff_abs_in_range(diff, "1.0 到 1.5"))
 
     def test_negative_difference_filters(self):
         diff = flt.calculate_score_diff({"score_total": 7.0, "bangumi_score": 8.2})
         self.assertEqual(diff, -1.2)
-        self.assertEqual(flt.format_diff(diff), "-1.2")
+        self.assertEqual(flt.format_diff(diff), "-1.20")
         self.assertTrue(flt.diff_direction_matches(diff, "我低于 Bangumi"))
         self.assertTrue(flt.diff_abs_in_range(diff, "1.0 到 1.5"))
 

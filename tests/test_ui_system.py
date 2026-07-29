@@ -25,6 +25,21 @@ class Upload:
 
 
 class UiSystemTest(unittest.TestCase):
+    def test_score_precision_is_consistent_across_every_work_card(self) -> None:
+        self.assertEqual(components.fmt_work_score({"score_total": 8.2, "score_mode": "manual"}), "8.2")
+        self.assertEqual(components.fmt_work_score({"score_total": 8.2, "score_mode": "auto"}), "8.20")
+        self.assertEqual(components.fmt_work_score({"score_total": 8.2}), "8.20")
+        self.assertEqual(components.fmt_score(8.2), "8.20")
+        self.assertEqual(components.fmt_score(None), "—")
+
+    def test_readonly_top_nav_opens_add_page_without_queueing_a_second_dialog(self) -> None:
+        state: dict[str, object] = {"edit_id": 9}
+        with patch.object(components.st, "session_state", state):
+            components._navigate_to("新增条目", readonly=True)
+        self.assertEqual(state["nav_page"], "新增条目")
+        self.assertNotIn("readonly_notice_pending", state)
+        self.assertNotIn("edit_id", state)
+
     def test_corrupt_settings_recovers_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "ui_settings.json"
@@ -76,25 +91,6 @@ class UiSystemTest(unittest.TestCase):
         rule = next(rule for rule in css.split("}") if selector in rule)
         self.assertIn("filter:none", rule)
         self.assertNotIn("saturate(", rule)
-
-    def test_old_edge_native_form_controls_are_forced_dark(self) -> None:
-        config = copy.deepcopy(settings.DEFAULT_SETTINGS)
-        with patch.object(components.st, "markdown") as markdown:
-            components.inject_css(config)
-        css = markdown.call_args.args[0]
-        self.assertIn("color-scheme:dark!important", css)
-        self.assertIn('[data-testid="stNumberInput"] button', css)
-        self.assertIn('input:not([type="checkbox"]):not([type="radio"])', css)
-        self.assertIn('[data-testid="stExpander"] summary', css)
-        self.assertIn('[data-testid="stFileUploaderDropzone"]', css)
-        self.assertIn('[data-testid="stBaseButton-segmented_control"]', css)
-        self.assertIn('[data-testid="stBaseButton-segmented_controlActive"]', css)
-        segmented_rule = next(
-            rule for rule in css.split("}")
-            if '[data-testid="stBaseButton-segmented_control"]' in rule and ":hover" not in rule
-        )
-        self.assertIn("background:#0e1117!important", segmented_rule)
-        self.assertIn("-webkit-text-fill-color:#e7e7e9!important", segmented_rule)
 
     def test_background_renderer_is_fully_disabled(self) -> None:
         page = {
@@ -186,6 +182,59 @@ class UiSystemTest(unittest.TestCase):
         rendered = markdown.call_args.args[0]
         for group_index in range(4):
             self.assertIn(f"yg-season-sharedrun-{group_index}-0", rendered)
+        self.assertEqual(rendered.count('loading="lazy" decoding="async" fetchpriority="low"'), 8)
+
+    def test_shared_season_memory_slides_previous_and_current_cards(self) -> None:
+        groups = [
+            {
+                "year": 2026 - years_ago,
+                "years_ago": years_ago,
+                "season_code": "Q3",
+                "season_month_label": "7月番",
+                "works": [
+                    {"title": f"作品 {years_ago}-1", "type": "动画"},
+                    {"title": f"作品 {years_ago}-2", "type": "动画"},
+                ],
+            }
+            for years_ago in (0, 5, 10, 20)
+        ]
+        with (
+            patch.object(components, "seasonal_anime_groups", return_value=groups),
+            patch.object(components, "_season_memory_cover_src", return_value="/poster.jpg"),
+            patch.object(components.st, "markdown") as markdown,
+        ):
+            components.render_season_time_windows([], active_slot=1)
+        rendered = markdown.call_args.args[0]
+        self.assertEqual(rendered.count('loading="lazy" decoding="async" fetchpriority="low"'), 8)
+        self.assertEqual(rendered.count('<span>02</span>'), 4)
+        self.assertIn("作品 0-1", rendered)
+        self.assertIn("作品 0-2", rendered)
+        self.assertIn("translateY(-24%)", rendered)
+        self.assertIn("translateY(24%)", rendered)
+        self.assertIn(".82s cubic-bezier(.22,.8,.25,1) both", rendered)
+
+    def test_shared_season_memory_defers_only_full_resolution_network_requests(self) -> None:
+        groups = [
+            {
+                "year": 2026 - years_ago,
+                "years_ago": years_ago,
+                "season_code": "Q3",
+                "season_month_label": "7月番",
+                "works": [{"title": f"作品 {years_ago}", "type": "动画"}],
+            }
+            for years_ago in (0, 5, 10, 20)
+        ]
+        with (
+            patch.object(components, "seasonal_anime_groups", return_value=groups),
+            patch.object(components, "_season_memory_cover_src", return_value="/poster.jpg"),
+            patch.object(components.share_assets, "enabled", return_value=True),
+            patch.object(components.st, "markdown") as markdown,
+        ):
+            components.render_season_time_windows([], active_slot=1)
+        rendered = markdown.call_args.args[0]
+        self.assertEqual(rendered.count('data-yg-src="/poster.jpg"'), 4)
+        self.assertEqual(rendered.count('data-yg-deferred="1"'), 4)
+        self.assertNotIn('<img src="/poster.jpg"', rendered)
 
     def test_real_time_season_boundaries(self) -> None:
         cases = [

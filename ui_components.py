@@ -14,6 +14,7 @@ from urllib.parse import quote
 
 import streamlit as st
 from PIL import Image, ImageOps
+import share_assets
 
 ROOT = Path(__file__).resolve().parent
 PLACEHOLDER = str(ROOT / "covers" / "default.svg")
@@ -28,6 +29,15 @@ BACKGROUND_MODE = "off"
 BACKGROUND_INTERVAL_SECONDS = 15
 SEASON_MEMORY_STEP_SECONDS = 10
 SEASON_MEMORY_TRANSITION_HALF_SECONDS = 0.3
+DEFERRED_IMAGE_PLACEHOLDER = (
+    "data:image/svg+xml;base64,"
+    + base64.b64encode(
+        b"""<svg xmlns="http://www.w3.org/2000/svg" width="720" height="1080" viewBox="0 0 720 1080">
+<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#262a35"/><stop offset=".55" stop-color="#191d27"/><stop offset="1" stop-color="#302331"/></linearGradient></defs>
+<rect width="720" height="1080" fill="url(#g)"/><circle cx="590" cy="190" r="170" fill="#ff5c8a" opacity=".08"/><circle cx="120" cy="900" r="210" fill="#55d9ff" opacity=".06"/>
+</svg>"""
+    ).decode("ascii")
+)
 BACKGROUND_DISPLAY_MODES = {"soft", "contain", "corner", "off"}
 BACKGROUND_PROFILES: dict[str, dict[str, Any]] = {
     "soft": {
@@ -58,12 +68,39 @@ def fmt_score(value: Any, empty: str = "—") -> str:
     return empty if value is None else f"{float(value):.2f}"
 
 
+def fmt_work_score(work: dict[str, Any], empty: str = "—") -> str:
+    """Format the stored total according to how the owner produced it."""
+    value = work.get("score_total")
+    if value is None:
+        return empty
+    decimals = 1 if work.get("score_mode") == "manual" else 2
+    return f"{float(value):.{decimals}f}"
+
+
 def cover_for(work: dict[str, Any]) -> str:
+    if share_assets.enabled():
+        optimized = share_assets.work_cover_url(work)
+        if optimized:
+            return optimized
     for key in ("bangumi_image_url", "cover_url", "cover_path"):
         value = work.get(key)
         if value and (key != "cover_path" or Path(value).exists()):
             return value
     return PLACEHOLDER
+
+
+def _navigate_to(page: str, readonly: bool = False) -> None:
+    # The read-only add page renders its own single permission dialog.
+    # Queueing a second dialog here makes Streamlit register two identical
+    # dialogs during the same rerun and replaces the page with an error panel.
+    st.session_state["nav_page"] = page
+    st.session_state.pop("edit_id", None)
+
+
+def _open_work_detail(work_id: int, fallback_page: str) -> None:
+    st.session_state.detail_return_page = st.session_state.get("nav_page", fallback_page)
+    st.session_state.detail_id = work_id
+    st.session_state.nav_page = "条目详情"
 
 
 def diff_label(diff: Any) -> str:
@@ -80,17 +117,18 @@ def diff_label(diff: Any) -> str:
 
 
 def score_badges(work: dict[str, Any]) -> str:
-    mine = fmt_score(work.get("score_total"))
+    mine = fmt_work_score(work)
     bgm = fmt_score(work.get("bangumi_score"))
     diff = work.get("score_diff")
-    delta = "—" if diff is None else f"{float(diff):+.1f}"
+    delta = "—" if diff is None else f"{float(diff):+.2f}"
     return f"我的评分 **{mine}**　·　Bangumi **{bgm}**　·　差值 **{delta}**"
 
 
-def render_top_nav(current: str, pages: list[str]) -> None:
+def render_top_nav(current: str, pages: list[str], readonly: bool | None = None) -> None:
     """Anibt-inspired compact top navigation; sidebar remains a mobile fallback."""
     highlighted = "条目库" if current == "条目详情" else current
-    readonly = os.getenv("YANGGUMI_READ_ONLY", "0") == "1"
+    if readonly is None:
+        readonly = os.getenv("YANGGUMI_READ_ONLY", "0") == "1"
     with st.container(key="top_navigation"):
         columns = st.columns([1.45] + [1] * len(pages), gap="small", vertical_alignment="center")
         columns[0].markdown(
@@ -98,14 +136,14 @@ def render_top_nav(current: str, pages: list[str]) -> None:
             unsafe_allow_html=True,
         )
         for column, page in zip(columns[1:], pages):
-            if column.button(page, key=f"top_nav_{page}", type="primary" if page == highlighted else "secondary", use_container_width=True):
-                if readonly and page == "新增条目":
-                    st.session_state.readonly_notice_pending = True
-                    st.session_state.nav_page = page
-                    st.rerun()
-                st.session_state.nav_page = page
-                st.session_state.pop("edit_id", None)
-                st.rerun()
+            column.button(
+                page,
+                key=f"top_nav_{page}",
+                type="primary" if page == highlighted else "secondary",
+                use_container_width=True,
+                on_click=_navigate_to,
+                args=(page, readonly),
+            )
 
 
 def render_profile_summary(stats: dict[str, Any], live_readonly: bool = False) -> None:
@@ -114,7 +152,6 @@ def render_profile_summary(stats: dict[str, Any], live_readonly: bool = False) -
         f'<div><small>{html.escape(label)}</small><b>{html.escape(str(value))}</b></div>'
         for label, value in stats.items()
     )
-    live_readonly = os.getenv("YANGGUMI_READ_ONLY", "0") == "1"
     mode_label = "LIVE · READ ONLY · AUTO SYNC" if live_readonly else "LOCAL · PRIVATE · NO SYNC"
     st.markdown(
         f'<section class="yg-profile"><div class="yg-profile-avatar">Y</div>'
@@ -304,7 +341,8 @@ def render_current_season_carousel(works: list[dict[str, Any]]) -> None:
             posters.append(
                 f'<img class="yg-fanku-poster yg-fanku-pos-{position_class}" '
                 f'src="{html.escape(_image_src(cover_for(poster)), quote=True)}" '
-                f'alt="{html.escape(poster.get("title") or "动画海报", quote=True)}">'
+                f'alt="{html.escape(poster.get("title") or "动画海报", quote=True)}" '
+                'loading="lazy" decoding="async" fetchpriority="low">'
             )
         animation = ""
         if len(items) > 1:
@@ -323,7 +361,7 @@ def render_current_season_carousel(works: list[dict[str, Any]]) -> None:
             f'<article class="yg-fanku-scene" style="{animation}"><div class="yg-fanku-copy">'
             f'<small>CURRENT SEASON · {season["season_month_label"]}</small><h2>{html.escape(work.get("title") or "未命名动画")}</h2>'
             f'<p>{html.escape(work.get("original_title") or "私人当季观看档案")}</p>'
-            f'<div><b>我的评分 {fmt_score(work.get("score_total"))}</b><span>Bangumi {fmt_score(work.get("bangumi_score"))}</span><span>{votes_text}</span></div>'
+            f'<div><b>我的评分 {fmt_work_score(work)}</b><span>Bangumi {fmt_score(work.get("bangumi_score"))}</span><span>{votes_text}</span></div>'
             f'</div><div class="yg-fanku-stage">{"".join(posters)}</div></article>'
         )
     dots = "".join(f"<i class={'active' if i == 0 else ''}></i>" for i in range(len(items)))
@@ -340,6 +378,10 @@ def _season_memory_cover_src(work: dict[str, Any], year: int, season_code: str) 
         poster_dir = ROOT / "static" / "seasonal_posters" / f"{int(year)}_{season_code}"
         for poster in sorted(poster_dir.glob(f"{int(bangumi_id)}.*")):
             if poster.is_file():
+                if share_assets.enabled():
+                    return share_assets.seasonal_poster_url(
+                        str(poster), key=f"memory-{year}-{season_code}-{bangumi_id}"
+                    )
                 return _static_image_src(poster)
     return _image_src(cover_for(work))
 
@@ -368,7 +410,9 @@ def _season_memory_animation(item_index: int, item_count: int, name: str) -> tup
     return keyframes, style
 
 
-def render_season_time_windows(works: list[dict[str, Any]]) -> None:
+def render_season_time_windows(
+    works: list[dict[str, Any]], active_slot: int | None = None
+) -> None:
     groups = seasonal_anime_groups(works)
     animation_run_id = secrets.token_hex(4)
     windows: list[str] = []
@@ -377,31 +421,65 @@ def render_season_time_windows(works: list[dict[str, Any]]) -> None:
         ago = group["years_ago"]
         label = "当季" if ago == 0 else f"{ago} 年前"
         title = f'{group["year"]} · {group["season_month_label"]}'
-        items = group["works"]
-        if items:
+        all_items = group["works"]
+        item_count = len(all_items)
+        if all_items:
+            if active_slot is not None:
+                current_index = int(active_slot) % item_count
+                items = (
+                    [all_items[(current_index - 1) % item_count], all_items[current_index]]
+                    if item_count > 1
+                    else [all_items[current_index]]
+                )
+            else:
+                items = all_items
             cards: list[str] = []
             for item_index, work in enumerate(items):
                 animation_name = f"yg-season-{animation_run_id}-{group_index}-{item_index}"
                 style = ""
-                if len(items) > 1:
+                if active_slot is None and len(items) > 1:
                     keyframes, style = _season_memory_animation(item_index, len(items), animation_name)
                     animation_css.append(keyframes)
+                elif active_slot is not None and len(items) > 1:
+                    if item_index == 0:
+                        animation_css.append(
+                            f"@keyframes {animation_name}{{from{{opacity:1;transform:translateY(0)}}"
+                            "to{opacity:0;transform:translateY(-24%)}}"
+                        )
+                    else:
+                        animation_css.append(
+                            f"@keyframes {animation_name}{{from{{opacity:0;transform:translateY(24%)}}"
+                            "to{opacity:1;transform:translateY(0)}}"
+                        )
+                    style = (
+                        f"animation:{animation_name} .82s cubic-bezier(.22,.8,.25,1) both;"
+                        f"z-index:{item_index + 1}"
+                    )
                 original = work.get("original_title") or ""
                 review = work.get("short_review") or "暂无短评"
                 record_date = work.get("finish_date") or work.get("start_date") or ""
                 record_footer = f'<footer>{html.escape(record_date)}</footer>' if record_date else ""
                 cover_src = _season_memory_cover_src(work, group["year"], group["season_code"])
+                escaped_cover = html.escape(cover_src, quote=True)
+                image_attributes = f'src="{escaped_cover}"'
+                if active_slot is not None and share_assets.enabled():
+                    image_attributes = (
+                        f'src="{DEFERRED_IMAGE_PLACEHOLDER}" '
+                        f'data-yg-src="{escaped_cover}" data-yg-deferred="1"'
+                    )
                 cards.append(
-                    f'<article class="yg-season-memory" style="{style}"><img src="{html.escape(cover_src, quote=True)}" alt="{html.escape(work.get("title") or "动画海报", quote=True)}">'
+                    f'<article class="yg-season-memory" style="{style}"><img {image_attributes} '
+                    f'alt="{html.escape(work.get("title") or "动画海报", quote=True)}" '
+                    'loading="lazy" decoding="async" fetchpriority="low">'
                     f'<div><span>{html.escape(work.get("status") or "已记录")}</span><strong>{html.escape(work.get("title") or "未命名动画")}</strong>'
-                    f'<small>{html.escape(original)}</small><p><b>我的评分 {fmt_score(work.get("score_total"))}</b><b>Bangumi {fmt_score(work.get("bangumi_score"))}</b></p>'
+                    f'<small>{html.escape(original)}</small><p><b>我的评分 {fmt_work_score(work)}</b><b>Bangumi {fmt_score(work.get("bangumi_score"))}</b></p>'
                     f'<em>{html.escape(review)}</em>{record_footer}</div></article>'
                 )
             track = f'<div class="yg-season-memory-stack">{"".join(cards)}</div>'
         else:
             track = '<div class="yg-season-empty"><div class="yg-season-black"><span>NO RECORD</span></div><strong>这一季还没有记录动画</strong><small>去看动画吧 ✦</small></div>'
         windows.append(
-            f'<section class="yg-season-window"><header><div><small>{html.escape(label)} · {group["season_code"]}</small><b>{html.escape(title)}</b></div><span>{len(items):02d}</span></header><div class="yg-season-screen">{track}</div></section>'
+            f'<section class="yg-season-window"><header><div><small>{html.escape(label)} · {group["season_code"]}</small><b>{html.escape(title)}</b></div><span>{item_count:02d}</span></header><div class="yg-season-screen">{track}</div></section>'
         )
     st.markdown(
         f'<style>{"".join(animation_css)}</style><div class="yg-season-title"><div><small>SEASONAL TIME MACHINE</small><h3>同一季度，四段观看记忆</h3></div><span>每 10 秒切换 · 仅本地动画记录</span></div>'
@@ -417,7 +495,17 @@ def work_row(work: dict[str, Any], key_prefix: str = "work", rank: int | None = 
         compact = key_prefix in {"recent", "recent_finished"}
         cover, body, action = st.columns([1.18, 5.22, 1.60] if compact else [1.42, 5.53, 1.05], vertical_alignment="center")
         with cover:
-            st.image(cover_for(work), width=84 if compact else 96)
+            if compact and share_assets.enabled():
+                source = html.escape(cover_for(work), quote=True)
+                title = html.escape(work.get("title") or "动画海报", quote=True)
+                st.markdown(
+                    f'<div class="yg-deferred-work-image"><img src="{DEFERRED_IMAGE_PLACEHOLDER}" '
+                    f'data-yg-src="{source}" data-yg-deferred="1" alt="{title}" '
+                    'loading="lazy" decoding="async" fetchpriority="low"></div>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.image(cover_for(work), width=84 if compact else 96)
         with body:
             title = work.get("title") or "未命名"
             rank_html = f'<span class="yg-rank-number">#{rank:02d}</span>' if rank else ""
@@ -425,8 +513,8 @@ def work_row(work: dict[str, Any], key_prefix: str = "work", rank: int | None = 
             original = work.get("original_title") or ""
             original_text = html.escape(str(original)) if original and original != title else "&nbsp;"
             st.markdown(f'<div class="yg-work-original">{original_text}</div>', unsafe_allow_html=True)
-            mine = fmt_score(work.get("score_total")); public = fmt_score(work.get("bangumi_score"))
-            diff = work.get("score_diff"); delta = "—" if diff is None else f"{float(diff):+.1f}"
+            mine = fmt_work_score(work); public = fmt_score(work.get("bangumi_score"))
+            diff = work.get("score_diff"); delta = "—" if diff is None else f"{float(diff):+.2f}"
             delta_class = "neutral" if diff is None or abs(float(diff)) <= .5 else ("positive" if float(diff) > 0 else "negative")
             st.markdown(
                 f'<div class="yg-score-row"><span><small>MY</small><b>{mine}</b></span><span><small>BGM</small><b>{public}</b></span><span class="{delta_class}"><small>DIFF</small><b>{delta}</b></span></div>',
@@ -447,11 +535,10 @@ def work_row(work: dict[str, Any], key_prefix: str = "work", rank: int | None = 
             finish_text = f'完成于 {html.escape(str(work["finish_date"]))}' if work.get("finish_date") else "&nbsp;"
             st.markdown(f'<div class="yg-work-finish">{finish_text}</div>', unsafe_allow_html=True)
         with action:
-            if st.button("打开档案 →", key=f"{key_prefix}_{work['id']}", use_container_width=True):
-                st.session_state.detail_return_page = st.session_state.get("nav_page", "条目库")
-                st.session_state.detail_id = work["id"]
-                st.session_state.nav_page = "条目详情"
-                st.rerun()
+            st.button(
+                "打开档案 →", key=f"{key_prefix}_{work['id']}", use_container_width=True,
+                on_click=_open_work_detail, args=(int(work["id"]), "条目库"),
+            )
 
 
 def work_grid_card(work: dict[str, Any], key_prefix: str = "grid") -> None:
@@ -466,9 +553,9 @@ def work_grid_card(work: dict[str, Any], key_prefix: str = "grid") -> None:
             original_text = html.escape(original) if original and original != title else "&nbsp;"
             st.markdown(f'<div class="yg-grid-title">{html.escape(title)}</div>', unsafe_allow_html=True)
             st.markdown(f'<div class="yg-grid-original">{original_text}</div>', unsafe_allow_html=True)
-            mine, public = fmt_score(work.get("score_total")), fmt_score(work.get("bangumi_score"))
+            mine, public = fmt_work_score(work), fmt_score(work.get("bangumi_score"))
             diff = work.get("score_diff")
-            delta = "—" if diff is None else f"{float(diff):+.1f}"
+            delta = "—" if diff is None else f"{float(diff):+.2f}"
             st.markdown(
                 f'<div class="yg-score-row"><span><small>MY</small><b>{mine}</b></span>'
                 f'<span><small>BGM</small><b>{public}</b></span><span><small>DIFF</small><b>{delta}</b></span></div>',
@@ -489,11 +576,10 @@ def work_grid_card(work: dict[str, Any], key_prefix: str = "grid") -> None:
             )
             review = html.escape(str(work["short_review"])) if work.get("short_review") else "&nbsp;"
             st.markdown(f'<div class="yg-grid-review">{review}</div>', unsafe_allow_html=True)
-        if st.button("打开档案 →", key=f"{key_prefix}_{work['id']}", use_container_width=True):
-            st.session_state.detail_return_page = st.session_state.get("nav_page", "条目库")
-            st.session_state.detail_id = work["id"]
-            st.session_state.nav_page = "条目详情"
-            st.rerun()
+        st.button(
+            "打开档案 →", key=f"{key_prefix}_{work['id']}", use_container_width=True,
+            on_click=_open_work_detail, args=(int(work["id"]), "条目库"),
+        )
 
 
 def ranking_list(works: list[dict[str, Any]], key_prefix: str, start_rank: int = 1) -> None:
@@ -530,15 +616,14 @@ def ranking_showcase(works: list[dict[str, Any]], key_prefix: str, limit: int) -
                         )
                         st.caption(work.get("original_title") or "")
                         st.markdown(
-                            f'<div class="yg-fifty-score"><b>{fmt_score(work.get("score_total"))}</b><span>MY SCORE</span>'
+                            f'<div class="yg-fifty-score"><b>{fmt_work_score(work)}</b><span>MY SCORE</span>'
                             f'<em>BGM {fmt_score(work.get("bangumi_score"))}</em></div>',
                             unsafe_allow_html=True,
                         )
-                        if st.button("档案 →", key=f"{key_prefix}_fifty_{work['id']}", use_container_width=True):
-                            st.session_state.detail_return_page = st.session_state.get("nav_page", "排行榜")
-                            st.session_state.detail_id = work["id"]
-                            st.session_state.nav_page = "条目详情"
-                            st.rerun()
+                        st.button(
+                            "档案 →", key=f"{key_prefix}_fifty_{work['id']}", use_container_width=True,
+                            on_click=_open_work_detail, args=(int(work["id"]), "排行榜"),
+                        )
         return
 
     if limit == 20:
@@ -551,15 +636,14 @@ def ranking_showcase(works: list[dict[str, Any]], key_prefix: str, limit: int) -
                 st.markdown(f"### {html.escape(work.get('title') or '未命名')}")
                 st.caption(work.get("original_title") or "")
                 st.markdown(
-                    f'<div class="yg-twenty-score"><b>{fmt_score(work.get("score_total"))}</b>'
+                    f'<div class="yg-twenty-score"><b>{fmt_work_score(work)}</b>'
                     f'<span>BGM {fmt_score(work.get("bangumi_score"))}</span></div>',
                     unsafe_allow_html=True,
                 )
-                if st.button("查看 →", key=f"{key_prefix}_twenty_{work['id']}", use_container_width=True):
-                    st.session_state.detail_return_page = st.session_state.get("nav_page", "排行榜")
-                    st.session_state.detail_id = work["id"]
-                    st.session_state.nav_page = "条目详情"
-                    st.rerun()
+                st.button(
+                    "查看 →", key=f"{key_prefix}_twenty_{work['id']}", use_container_width=True,
+                    on_click=_open_work_detail, args=(int(work["id"]), "排行榜"),
+                )
         return
 
     leaders = works[:3]
@@ -578,12 +662,11 @@ def ranking_showcase(works: list[dict[str, Any]], key_prefix: str, limit: int) -
                 st.markdown(f"### {html.escape(work.get('title') or '未命名')}")
                 if work.get("original_title") and work.get("original_title") != work.get("title"):
                     st.caption(work["original_title"])
-                st.markdown(f'<div class="yg-podium-score">{fmt_score(work.get("score_total"))}<small>MY SCORE</small></div>', unsafe_allow_html=True)
-                if st.button("进入档案 →", key=f"{key_prefix}_podium_{work['id']}", use_container_width=True):
-                    st.session_state.detail_return_page = st.session_state.get("nav_page", "排行榜")
-                    st.session_state.detail_id = work["id"]
-                    st.session_state.nav_page = "条目详情"
-                    st.rerun()
+                st.markdown(f'<div class="yg-podium-score">{fmt_work_score(work)}<small>MY SCORE</small></div>', unsafe_allow_html=True)
+                st.button(
+                    "进入档案 →", key=f"{key_prefix}_podium_{work['id']}", use_container_width=True,
+                    on_click=_open_work_detail, args=(int(work["id"]), "排行榜"),
+                )
 
     remainder = works[3:]
     if remainder:
@@ -595,20 +678,19 @@ def ranking_showcase(works: list[dict[str, Any]], key_prefix: str, limit: int) -
                 st.image(cover_for(work), use_container_width=True)
                 st.markdown(f"### {html.escape(work.get('title') or '未命名')}")
                 st.markdown(
-                    f'<div class="yg-ten-score">{fmt_score(work.get("score_total"))}<small>PERSONAL SCORE</small></div>',
+                    f'<div class="yg-ten-score">{fmt_work_score(work)}<small>PERSONAL SCORE</small></div>',
                     unsafe_allow_html=True,
                 )
-                if st.button("进入档案 →", key=f"{key_prefix}_ten_{work['id']}", use_container_width=True):
-                    st.session_state.detail_return_page = st.session_state.get("nav_page", "排行榜")
-                    st.session_state.detail_id = work["id"]
-                    st.session_state.nav_page = "条目详情"
-                    st.rerun()
+                st.button(
+                    "进入档案 →", key=f"{key_prefix}_ten_{work['id']}", use_container_width=True,
+                    on_click=_open_work_detail, args=(int(work["id"]), "排行榜"),
+                )
 
 
 def _image_src(value: str | None) -> str:
     if not value:
         return ""
-    if value.startswith(("http://", "https://", "data:")):
+    if value.startswith(("http://", "https://", "data:", "/app/static/")):
         return value
     path = Path(value)
     if not path.exists() or not path.is_file():
@@ -782,7 +864,8 @@ def poster_pool(works: list[dict[str, Any]], max_count: int = 24) -> list[dict[s
 def _poster_images(posters: list[dict[str, Any]], css_class: str, limit: int) -> str:
     return "".join(
         f'<img class="{css_class}" src="{html.escape(work["_poster_src"], quote=True)}" '
-        f'alt="{html.escape(work.get("title") or "作品海报", quote=True)}" loading="lazy">'
+        f'alt="{html.escape(work.get("title") or "作品海报", quote=True)}" '
+        'loading="lazy" decoding="async" fetchpriority="low">'
         for work in posters[:limit]
     )
 
@@ -879,7 +962,7 @@ def inject_css(settings: dict[str, Any] | None = None) -> None:
     st.markdown(f"""
     <style>
       :root {{--yg-pink:#ff5c8a;--yg-pink-2:#ff86ae;--yg-cyan:#55d9ff;--yg-violet:#8f7cff;--yg-bg:#080a12;--yg-panel:#121622;--yg-line:rgba(153,169,205,.18);}}
-      html {{scroll-behavior:smooth;color-scheme:dark!important;}}
+      html {{scroll-behavior:smooth;}}
       body, [data-testid="stAppViewContainer"] {{background:radial-gradient(circle at 82% 0%,rgba(113,78,191,.16),transparent 32%),radial-gradient(circle at 22% 8%,rgba(255,67,126,.12),transparent 30%),#080a12;color:#f4f6fb;}}
       [data-testid="stHeader"] {{background:rgba(8,10,18,.58); backdrop-filter:blur(18px); border-bottom:1px solid rgba(255,255,255,.05);}}
       .block-container {{max-width:1320px; padding-top:2.1rem; padding-bottom:5rem; position:relative; z-index:2;}}
@@ -1029,9 +1112,10 @@ def inject_css(settings: dict[str, Any] | None = None) -> None:
 
       /* 第八步复刻规范：Anibt 顶栏/列表 + Bangumi 档案统计 + 番库追番卡片。 */
       :root {{--yg-pink:#d65a7a;--yg-pink-2:#ed7896;--yg-cyan:#69aeb5;--yg-violet:#7c748f;--yg-bg:#202020;--yg-panel:#292929;--yg-panel-2:#303030;--yg-line:rgba(255,255,255,.085);}}
+      html {{color-scheme:dark!important;}}
       body,[data-testid="stAppViewContainer"] {{background:#202020;color:#e7e7e9;font-family:Inter,"Segoe UI","Microsoft YaHei",sans-serif;}}
       [data-testid="stHeader"] {{display:none;height:0;background:transparent;border:0;}}
-      html {{scroll-behavior:smooth;}}
+      html {{scroll-behavior:smooth;color-scheme:dark!important;}}
       html,body,[data-testid="stAppViewContainer"] {{overflow-x:hidden;}}
       .block-container {{width:100%;max-width:1440px;min-width:0;padding:4.15rem 1.5rem 4rem;box-sizing:border-box;animation:none;}}
       [data-testid="stSidebar"] {{display:none;}}
@@ -1199,61 +1283,137 @@ def inject_css(settings: dict[str, Any] | None = None) -> None:
       .yg-score-row>span {{padding:.32rem .5rem;}}
       .yg-score-row small {{font-size:12px!important;}}
       .yg-review-line,.yg-grid-review {{font-size:14px;line-height:1.55;}}
-      [class*="st-key-recent_row_"] [data-testid="stImage"] img,[class*="st-key-recent_finished_row_"] [data-testid="stImage"] img,[class*="st-key-ranking_"][class*="_row_"] [data-testid="stImage"] img,[class*="st-key-compare_"][class*="_row_"] [data-testid="stImage"] img,[class*="st-key-cat_"][class*="_row_"] [data-testid="stImage"] img,[class*="st-key-library_row_"] [data-testid="stImage"] img,[class*="st-key-tag_works_"][class*="_row_"] [data-testid="stImage"] img,[class*="st-key-tag_result_"] [data-testid="stImage"] img {{width:96px!important;min-width:96px;aspect-ratio:2/3;object-fit:cover;}}
+      [class*="st-key-recent_row_"] [data-testid="stImage"] img,[class*="st-key-recent_finished_row_"] [data-testid="stImage"] img,[class*="st-key-ranking_"][class*="_row_"] [data-testid="stImage"] img,[class*="st-key-compare_filtered_"][class*="_row_"] [data-testid="stImage"] img,[class*="st-key-cat_"][class*="_row_"] [data-testid="stImage"] img,[class*="st-key-library_row_"] [data-testid="stImage"] img,[class*="st-key-tag_works_"][class*="_row_"] [data-testid="stImage"] img,[class*="st-key-tag_result_"] [data-testid="stImage"] img {{width:96px!important;min-width:96px;aspect-ratio:2/3;object-fit:cover;}}
       [class*="st-key-recent_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:nth-child(2),
       [class*="st-key-recent_finished_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:nth-child(2),
       [class*="st-key-ranking_"][class*="_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:nth-child(2),
-      [class*="st-key-compare_"][class*="_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:nth-child(2),
+      [class*="st-key-compare_filtered_"][class*="_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:nth-child(2),
       [class*="st-key-cat_"][class*="_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:nth-child(2),
       [class*="st-key-tag_works_"][class*="_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:nth-child(2),
       [class*="st-key-tag_result_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:nth-child(2),
       [class*="st-key-library_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:nth-child(2) {{padding-left:12px;}}
       [class*="st-key-ranking_"][class*="_row_"]>div[data-testid="stVerticalBlockBorderWrapper"],
-      [class*="st-key-compare_"][class*="_row_"]>div[data-testid="stVerticalBlockBorderWrapper"],
+      [class*="st-key-compare_filtered_"][class*="_row_"]>div[data-testid="stVerticalBlockBorderWrapper"],
       [class*="st-key-cat_"][class*="_row_"]>div[data-testid="stVerticalBlockBorderWrapper"],
       [class*="st-key-library_row_"]>div[data-testid="stVerticalBlockBorderWrapper"],
       [class*="st-key-tag_works_"][class*="_row_"]>div[data-testid="stVerticalBlockBorderWrapper"] {{min-height:188px;padding:1rem!important;overflow:hidden;}}
       [class*="st-key-ranking_"][class*="_row_"] [data-testid="stHorizontalBlock"],
-      [class*="st-key-compare_"][class*="_row_"] [data-testid="stHorizontalBlock"],
+      [class*="st-key-compare_filtered_"][class*="_row_"] [data-testid="stHorizontalBlock"],
       [class*="st-key-cat_"][class*="_row_"] [data-testid="stHorizontalBlock"],
       [class*="st-key-library_row_"] [data-testid="stHorizontalBlock"],
       [class*="st-key-tag_works_"][class*="_row_"] [data-testid="stHorizontalBlock"] {{display:grid!important;grid-template-columns:112px minmax(0,1fr) 164px!important;gap:18px!important;align-items:center!important;}}
       [class*="st-key-ranking_"][class*="_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"],
-      [class*="st-key-compare_"][class*="_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"],
+      [class*="st-key-compare_filtered_"][class*="_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"],
       [class*="st-key-cat_"][class*="_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"],
       [class*="st-key-library_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"],
       [class*="st-key-tag_works_"][class*="_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"] {{width:auto!important;min-width:0!important;max-width:none!important;flex:unset!important;}}
       [class*="st-key-ranking_"][class*="_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:nth-child(1),
-      [class*="st-key-compare_"][class*="_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:nth-child(1),
+      [class*="st-key-compare_filtered_"][class*="_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:nth-child(1),
       [class*="st-key-cat_"][class*="_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:nth-child(1),
       [class*="st-key-library_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:nth-child(1),
       [class*="st-key-tag_works_"][class*="_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:nth-child(1) {{width:112px!important;}}
       [class*="st-key-ranking_"][class*="_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:nth-child(2),
-      [class*="st-key-compare_"][class*="_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:nth-child(2),
+      [class*="st-key-compare_filtered_"][class*="_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:nth-child(2),
       [class*="st-key-cat_"][class*="_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:nth-child(2),
       [class*="st-key-library_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:nth-child(2),
       [class*="st-key-tag_works_"][class*="_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:nth-child(2) {{min-width:0!important;padding-left:0!important;overflow:hidden;}}
       [class*="st-key-ranking_"][class*="_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:nth-child(3),
-      [class*="st-key-compare_"][class*="_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:nth-child(3),
+      [class*="st-key-compare_filtered_"][class*="_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:nth-child(3),
       [class*="st-key-cat_"][class*="_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:nth-child(3),
       [class*="st-key-library_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:nth-child(3),
       [class*="st-key-tag_works_"][class*="_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:nth-child(3) {{width:164px!important;align-self:stretch;display:flex!important;align-items:center;}}
       [class*="st-key-ranking_"][class*="_row_"] .stButton button,
-      [class*="st-key-compare_"][class*="_row_"] .stButton button,
+      [class*="st-key-compare_filtered_"][class*="_row_"] .stButton button,
       [class*="st-key-cat_"][class*="_row_"] .stButton button,
       [class*="st-key-library_row_"] .stButton button,
       [class*="st-key-tag_works_"][class*="_row_"] .stButton button {{width:100%;height:44px;min-width:0;}}
+      [class*="st-key-compare_dimension_row_"]>div[data-testid="stVerticalBlockBorderWrapper"] {{
+        position:relative;margin:.7rem 0;padding:.9rem 1rem!important;border:1px solid #34363e!important;
+        border-radius:14px;background:linear-gradient(110deg,rgba(214,90,122,.085),rgba(28,29,33,.96) 19%,rgba(28,29,33,.96));
+        overflow:hidden;
+      }}
+      [class*="st-key-compare_dimension_row_"]>div[data-testid="stVerticalBlockBorderWrapper"]::before {{
+        content:"";position:absolute;left:0;top:11px;bottom:11px;width:3px;border-radius:3px;background:#d65a7a;
+      }}
+      [class*="st-key-compare_dimension_row_"] [data-testid="stHorizontalBlock"] {{align-items:center;}}
+      [class*="st-key-compare_dimension_row_"] [data-testid="stColumn"] {{min-width:0;}}
+      [class*="st-key-compare_dimension_row_"] [data-testid="stImage"] {{display:flex;justify-content:center;}}
+      [class*="st-key-compare_dimension_row_"] [data-testid="stImage"] img {{
+        display:block;width:96px!important;height:144px!important;max-width:100%;margin:0 auto;
+        border:1px solid rgba(214,90,122,.28);border-radius:10px;object-fit:cover;
+        box-shadow:0 10px 24px rgba(0,0,0,.32);
+      }}
+      .yg-dimension-rank {{
+        width:max-content;max-width:100%;margin:0 auto .42rem;padding:.22rem .5rem;border-radius:999px;
+        background:rgba(214,90,122,.15);color:#ea86a0;font-size:12px;font-weight:900;
+        letter-spacing:.08em;text-align:center;overflow-wrap:anywhere;
+      }}
+      .yg-dimension-title {{
+        width:100%;max-width:100%;margin:0 auto .28rem;color:#f0f0f2;font-size:18px;font-weight:850;
+        line-height:1.35;text-align:center;overflow-wrap:anywhere;word-break:break-word;hyphens:auto;
+      }}
+      .yg-dimension-meta {{
+        width:100%;max-width:100%;margin:0 auto .72rem;color:#8f929b;font-size:12px;line-height:1.45;
+        text-align:center;overflow-wrap:anywhere;word-break:break-word;
+      }}
+      [class*="st-key-compare_dimension_row_"] [data-testid="stMetric"] {{
+        display:flex;min-height:74px;flex-direction:column;align-items:center;justify-content:center;
+        padding:.55rem .45rem;border:1px solid #303239;border-radius:10px;background:rgba(22,23,27,.78);
+        text-align:center;overflow:hidden;
+      }}
+      [class*="st-key-compare_dimension_row_"] [data-testid="stMetricLabel"] {{
+        width:100%;justify-content:center;color:#92959f;font-size:11px;line-height:1.3;text-align:center;
+        white-space:normal;overflow-wrap:anywhere;word-break:break-word;
+      }}
+      [class*="st-key-compare_dimension_row_"] [data-testid="stMetricValue"] {{
+        width:100%;font-size:20px;line-height:1.15;text-align:center;overflow-wrap:anywhere;
+      }}
+      .yg-dimension-edit-label {{
+        width:100%;max-width:100%;margin:0 0 .42rem;color:#a6a8b0;font-size:12px;font-weight:750;
+        line-height:1.35;text-align:center;overflow-wrap:anywhere;word-break:break-word;
+      }}
+      [class*="st-key-compare_dimension_row_"] [data-testid="stNumberInput"] input {{
+        min-height:42px;text-align:center;font-weight:800;border-color:#484b54;
+      }}
+      [class*="st-key-compare_dimension_row_"] .stButton button {{
+        width:100%;min-height:42px;margin-top:.38rem;padding:.48rem .42rem;white-space:normal;
+        line-height:1.25;overflow-wrap:anywhere;word-break:break-word;
+      }}
+      [class*="st-key-compare_dimension_row_"] .stButton button:focus-visible {{
+        outline:2px solid #ee8ca5;outline-offset:2px;
+      }}
       @media(max-width:860px) {{
         [class*="st-key-ranking_"][class*="_row_"] [data-testid="stHorizontalBlock"],
-        [class*="st-key-compare_"][class*="_row_"] [data-testid="stHorizontalBlock"],
+        [class*="st-key-compare_filtered_"][class*="_row_"] [data-testid="stHorizontalBlock"],
         [class*="st-key-cat_"][class*="_row_"] [data-testid="stHorizontalBlock"],
         [class*="st-key-library_row_"] [data-testid="stHorizontalBlock"],
         [class*="st-key-tag_works_"][class*="_row_"] [data-testid="stHorizontalBlock"] {{grid-template-columns:92px minmax(0,1fr)!important;}}
         [class*="st-key-ranking_"][class*="_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:nth-child(3),
-        [class*="st-key-compare_"][class*="_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:nth-child(3),
+        [class*="st-key-compare_filtered_"][class*="_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:nth-child(3),
         [class*="st-key-cat_"][class*="_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:nth-child(3),
         [class*="st-key-library_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:nth-child(3),
         [class*="st-key-tag_works_"][class*="_row_"] [data-testid="stHorizontalBlock"]>[data-testid="stColumn"]:nth-child(3) {{grid-column:1 / -1;width:100%!important;}}
+        [class*="st-key-compare_dimension_row_"] [data-testid="stHorizontalBlock"] {{flex-wrap:wrap!important;}}
+        [class*="st-key-compare_dimension_row_"] [data-testid="stColumn"] {{
+          width:auto!important;min-width:148px!important;flex:1 1 148px!important;
+        }}
+        [class*="st-key-compare_dimension_row_"] [data-testid="stColumn"]:has(.yg-dimension-rank) {{
+          min-width:108px!important;flex:0 0 108px!important;
+        }}
+        [class*="st-key-compare_dimension_row_"] [data-testid="stColumn"]:has(.yg-dimension-title) {{
+          min-width:360px!important;flex:1 1 360px!important;
+        }}
+        [class*="st-key-compare_dimension_row_"] [data-testid="stColumn"]:has([data-testid="stNumberInput"]) {{
+          min-width:180px!important;flex:1 1 180px!important;
+        }}
+      }}
+      @media(max-width:620px) {{
+        [class*="st-key-compare_dimension_row_"] [data-testid="stColumn"]:has(.yg-dimension-rank),
+        [class*="st-key-compare_dimension_row_"] [data-testid="stColumn"]:has(.yg-dimension-title),
+        [class*="st-key-compare_dimension_row_"] [data-testid="stColumn"]:has([data-testid="stNumberInput"]) {{
+          width:100%!important;min-width:100%!important;flex:1 1 100%!important;
+        }}
+        [class*="st-key-compare_dimension_row_"] [data-testid="stImage"] img {{width:88px!important;height:132px!important;}}
       }}
       [class*="st-key-grid_card_"]>div[data-testid="stVerticalBlockBorderWrapper"] {{min-height:420px;padding:.85rem;}}
       [class*="st-key-grid_card_"] h3 {{font-size:19px!important;line-height:1.35;}}
@@ -1488,6 +1648,8 @@ def inject_css(settings: dict[str, Any] | None = None) -> None:
       .st-key-home_recent_grid .yg-review-line {{height:23px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;}}
       .st-key-home_recent_grid .yg-work-finish {{height:22px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;}}
       .st-key-home_recent_grid [data-testid="stImage"] img {{width:clamp(88px,6vw,112px)!important;min-width:clamp(88px,6vw,112px);height:auto!important;aspect-ratio:2/3;object-fit:cover;}}
+      .st-key-home_recent_grid .yg-deferred-work-image {{width:clamp(88px,6vw,112px);min-width:clamp(88px,6vw,112px);aspect-ratio:2/3;overflow:hidden;border-radius:8px;background:linear-gradient(145deg,#262a35,#191d27 58%,#302331);}}
+      .st-key-home_recent_grid .yg-deferred-work-image img {{display:block;width:100%;height:100%;object-fit:cover;}}
 
       [class*="_grid_card_"]>div[data-testid="stVerticalBlockBorderWrapper"] {{height:548px;min-height:548px;padding:.9rem;overflow:hidden;}}
       [class*="_grid_card_"]>div[data-testid="stVerticalBlockBorderWrapper"]>div[data-testid="stVerticalBlock"] {{display:flex;height:100%;flex-direction:column;}}

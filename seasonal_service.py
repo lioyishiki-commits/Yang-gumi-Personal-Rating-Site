@@ -1003,13 +1003,24 @@ def _midnight_refresh_scheduler() -> None:
             pass
 
 
+def _current_season_catchup() -> None:
+    try:
+        refresh_current_season_if_due(datetime.now())
+    except Exception:
+        pass
+
+
 def start_midnight_refresh_scheduler() -> None:
-    """Keep a running local site synchronized at 00:00; first-open catch-up remains in app.py."""
+    """Keep background data fresh without blocking any Streamlit page render."""
     global _scheduler_started
     with _scheduler_lock:
         if _scheduler_started:
             return
         _scheduler_started = True
+        threading.Thread(
+            target=_current_season_catchup,
+            name="yanggumi-season-catchup", daemon=True,
+        ).start()
         threading.Thread(
             target=lambda: refresh_missing_anime_covers_if_due(datetime.now()),
             name="yanggumi-cover-catchup", daemon=True,

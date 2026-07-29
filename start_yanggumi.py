@@ -85,6 +85,8 @@ def main() -> int:
         "--server.address", HOST,
         "--server.port", str(PORT),
         "--server.headless", "true",
+        "--server.enableWebsocketCompression", "true",
+        "--server.fileWatcherType", "none",
         "--browser.serverAddress", HOST,
         "--browser.gatherUsageStats", "false",
     ]

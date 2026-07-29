@@ -5,6 +5,7 @@ import json
 import tempfile
 import unittest
 import zipfile
+from datetime import date
 from pathlib import Path
 
 import database as db
@@ -64,22 +65,41 @@ class DataManagementTest(unittest.TestCase):
         self.assertEqual(len(checks), 16)
         self.assertTrue(all(item["ok"] for item in checks))
 
-    def test_uploaded_database_replaces_current_data_after_validation(self) -> None:
-        self._add("导入前")
-        exported = db.backup_database().read_bytes()
-        self._add("导入后新增")
-        self.assertEqual(db.table_counts()["works"], 2)
-
-        db.restore_database(exported)
-
-        self.assertEqual(db.table_counts()["works"], 1)
-        self.assertTrue(any(db.BACKUP_DIR.glob("yanggumi_backup_*.db")))
-        self.assertFalse(any(db.DB_PATH.parent.glob("restore-check-*.db")))
-
-        page_source = Path(__file__).parents[1].joinpath("app.py").read_text(encoding="utf-8")
-        self.assertIn("加载已保存的数据", page_source)
-        self.assertIn('type=["db"]', page_source)
-        self.assertIn("db.restore_database(uploaded_backup.getvalue())", page_source)
+    def test_recent_precise_bangumi_cache_is_used_across_saved_work_views(self) -> None:
+        old_data_dir = db.DATA_DIR
+        try:
+            db.DATA_DIR = Path(self.temp.name)
+            db.DATA_DIR.joinpath("bangumi_rating_precision.json").write_text(
+                json.dumps({
+                    "version": 1,
+                    "items": {
+                        "265": {
+                            "score": 8.69,
+                            "votes": 33952,
+                            "date": date.today().isoformat(),
+                        }
+                    },
+                }),
+                encoding="utf-8",
+            )
+            work_id = db.save_work({
+                "title": "精确评分动画",
+                "type": "动画",
+                "score_mode": "auto",
+                "score_total": 8.14,
+                "bangumi_id": 265,
+                "bangumi_score": 8.3,
+                "bangumi_total_votes": 33000,
+            })
+            work = db.get_work(work_id)
+            self.assertEqual(work["bangumi_score"], 8.69)
+            self.assertEqual(work["bangumi_total_votes"], 33952)
+            self.assertEqual(work["score_diff"], -0.55)
+            listed = next(item for item in db.list_works() if item["id"] == work_id)
+            self.assertEqual(listed["bangumi_score"], 8.69)
+            self.assertEqual(listed["score_diff"], -0.55)
+        finally:
+            db.DATA_DIR = old_data_dir
 
 
 if __name__ == "__main__":

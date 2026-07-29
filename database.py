@@ -9,6 +9,7 @@ import shutil
 import sqlite3
 import zipfile
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
@@ -19,6 +20,10 @@ DB_PATH = DATA_DIR / "acgn.db"
 EXPORT_DIR = ROOT / "exports"
 BACKUP_DIR = ROOT / "backups"
 READ_ONLY_MODE = os.getenv("YANGGUMI_READ_ONLY", "0") == "1"
+_SESSION_READ_ONLY: ContextVar[bool | None] = ContextVar(
+    "yanggumi_database_read_only", default=None
+)
+_PRECISION_CACHE_STATE: tuple[str, int, dict[str, dict[str, Any]]] = ("", -1, {})
 
 SCORE_FIELDS = [
     "score_total", "score_story", "score_character", "score_art", "score_music",
@@ -38,9 +43,22 @@ WORK_COLUMNS = [
 ]
 
 
+def set_read_only_mode(enabled: bool) -> None:
+    """Set database access for the current Streamlit script context."""
+    _SESSION_READ_ONLY.set(bool(enabled))
+
+
+def read_only_mode() -> bool:
+    session_value = _SESSION_READ_ONLY.get()
+    if session_value is not None:
+        return session_value
+    return os.getenv("YANGGUMI_READ_ONLY", "0") == "1"
+
+
 @contextmanager
 def connect():
-    if READ_ONLY_MODE:
+    readonly = read_only_mode()
+    if readonly:
         if not DB_PATH.exists():
             raise FileNotFoundError(f"找不到共享数据库：{DB_PATH}")
         conn = sqlite3.connect(f"file:{DB_PATH.as_posix()}?mode=ro", uri=True)
@@ -51,7 +69,7 @@ def connect():
     conn.execute("PRAGMA foreign_keys = ON")
     try:
         yield conn
-        if not READ_ONLY_MODE:
+        if not readonly:
             conn.commit()
     except Exception:
         conn.rollback()
@@ -95,7 +113,7 @@ def _sync_bangumi_tags(conn: sqlite3.Connection, work_id: int, raw_tags: Any) ->
 
 
 def init_db() -> None:
-    if READ_ONLY_MODE:
+    if read_only_mode():
         if not DB_PATH.exists():
             raise FileNotFoundError(f"找不到共享数据库：{DB_PATH}")
         return
@@ -235,7 +253,7 @@ def _clean_work(data: dict[str, Any]) -> dict[str, Any]:
     cleaned = {key: data.get(key) for key in WORK_COLUMNS}
     for field in SCORE_FIELDS + ["bangumi_score"]:
         value = cleaned.get(field)
-        precision = 2 if field == "score_total" else 1
+        precision = 2 if field in {"score_total", "bangumi_score"} else 1
         if value in (None, ""):
             cleaned[field] = None
         else:
@@ -266,6 +284,54 @@ def _clean_work(data: dict[str, Any]) -> dict[str, Any]:
         value = cleaned.get(field)
         cleaned[field] = None if value in (None, "", 0) else int(value)
     return cleaned
+
+
+def _bangumi_precision_snapshot() -> dict[str, dict[str, Any]]:
+    """Read recent exact public scores without writing them into the owner DB."""
+    global _PRECISION_CACHE_STATE
+    path = DATA_DIR / "bangumi_rating_precision.json"
+    try:
+        mtime_ns = path.stat().st_mtime_ns
+    except OSError:
+        return {}
+    cache_key = str(path.resolve())
+    if _PRECISION_CACHE_STATE[:2] == (cache_key, mtime_ns):
+        return _PRECISION_CACHE_STATE[2]
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        raw_items = payload.get("items") if isinstance(payload, dict) else {}
+    except (OSError, TypeError, json.JSONDecodeError):
+        raw_items = {}
+    today = datetime.now().date()
+    fresh: dict[str, dict[str, Any]] = {}
+    if isinstance(raw_items, dict):
+        for subject_id, value in raw_items.items():
+            if not isinstance(value, dict) or value.get("score") is None:
+                continue
+            try:
+                age = (today - datetime.fromisoformat(str(value.get("date") or "")).date()).days
+            except (TypeError, ValueError):
+                continue
+            if 0 <= age <= 7:
+                fresh[str(subject_id)] = dict(value)
+    _PRECISION_CACHE_STATE = (cache_key, mtime_ns, fresh)
+    return fresh
+
+
+def _with_precise_bangumi_score(item: dict[str, Any]) -> dict[str, Any]:
+    subject_id = item.get("bangumi_id")
+    precise = _bangumi_precision_snapshot().get(str(subject_id)) if subject_id not in (None, "") else None
+    if precise:
+        item["bangumi_score"] = round(float(precise["score"]), 2)
+        if precise.get("votes") is not None:
+            item["bangumi_total_votes"] = int(precise["votes"])
+    mine, public = item.get("score_total"), item.get("bangumi_score")
+    item["score_diff"] = (
+        round(float(mine) - float(public), 2)
+        if mine is not None and public is not None
+        else None
+    )
+    return item
 
 
 def save_work(data: dict[str, Any], tags: Iterable[tuple[str, str]] = (), work_id: int | None = None) -> int:
@@ -305,7 +371,7 @@ def get_work(work_id: int) -> dict[str, Any] | None:
             "SELECT t.id, t.name, t.category, wt.source FROM tags t JOIN work_tags wt ON wt.tag_id=t.id WHERE wt.work_id=? ORDER BY wt.source,t.category,t.name", (work_id,)
         )]
         item["tag_names"] = " · ".join(tag["name"] for tag in item["tags"])
-        return item
+        return _with_precise_bangumi_score(item)
 
 
 def list_works() -> list[dict[str, Any]]:
@@ -313,11 +379,11 @@ def list_works() -> list[dict[str, Any]]:
         rows = conn.execute("""
             SELECT w.*, GROUP_CONCAT(CASE WHEN t.category='Bangumi' THEN t.name END, ' · ') AS tag_names,
                    CASE WHEN w.score_total IS NOT NULL AND w.bangumi_score IS NOT NULL
-                        THEN ROUND(w.score_total-w.bangumi_score, 1) END AS score_diff
+                        THEN ROUND(w.score_total-w.bangumi_score, 2) END AS score_diff
             FROM works w LEFT JOIN work_tags wt ON wt.work_id=w.id
             LEFT JOIN tags t ON t.id=wt.tag_id GROUP BY w.id
         """).fetchall()
-        return [dict(row) for row in rows]
+        return [_with_precise_bangumi_score(dict(row)) for row in rows]
 
 
 def search_work_ids(query: str) -> set[int]:
@@ -425,6 +491,91 @@ def update_work_status(work_id: int, status: str) -> None:
             "UPDATE works SET status=?, updated_at=? WHERE id=?",
             (status, datetime.now().isoformat(timespec="seconds"), int(work_id)),
         )
+
+
+def update_work_component_score(
+    work_id: int,
+    field: str,
+    value: Any,
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Update one active score dimension without touching unrelated work fields."""
+    import scoring
+
+    active_config = config or scoring.load_score_config()
+    if field not in scoring.all_component_fields(active_config):
+        raise ValueError("只能修改当前评分设置中启用的小项目。")
+    try:
+        clean_value = round(float(value), 1)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("评分必须是 0.0 到 10.0 之间的数字。") from exc
+    if not 0.0 <= clean_value <= 10.0:
+        raise ValueError("评分必须是 0.0 到 10.0 之间的数字。")
+
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM works WHERE id=?", (int(work_id),)).fetchone()
+        if row is None:
+            raise ValueError("找不到要修改的作品。")
+        work = dict(row)
+        custom_scores: dict[str, float] = {}
+        try:
+            parsed = json.loads(work.get("custom_scores_json") or "{}")
+            if isinstance(parsed, dict):
+                custom_scores = {
+                    str(key): float(item)
+                    for key, item in parsed.items()
+                    if str(key).startswith("custom_") and item not in (None, "")
+                }
+        except (TypeError, ValueError, json.JSONDecodeError):
+            custom_scores = {}
+
+        if field.startswith("custom_"):
+            custom_scores[field] = clean_value
+            custom_scores_json = json.dumps(
+                custom_scores, ensure_ascii=False, sort_keys=True
+            )
+            work["custom_scores_json"] = custom_scores_json
+        else:
+            if field not in SCORE_FIELDS:
+                raise ValueError("不支持的评分字段。")
+            custom_scores_json = work.get("custom_scores_json")
+            work[field] = clean_value
+
+        score_total = work.get("score_total")
+        if work.get("score_mode") == "auto":
+            score_total = scoring.calculate_total_score(
+                work,
+                work.get("bangumi_total_votes"),
+                config=active_config,
+            )
+        status = work.get("status")
+        if work.get("type") == "动画" and score_total is not None:
+            status = "已看"
+        updated_at = datetime.now().isoformat(timespec="microseconds")
+
+        if field.startswith("custom_"):
+            conn.execute(
+                """
+                UPDATE works
+                SET custom_scores_json=?, score_total=?, status=?, updated_at=?
+                WHERE id=?
+                """,
+                (custom_scores_json, score_total, status, updated_at, int(work_id)),
+            )
+        else:
+            conn.execute(
+                f"""
+                UPDATE works
+                SET {field}=?, score_total=?, status=?, updated_at=?
+                WHERE id=?
+                """,
+                (clean_value, score_total, status, updated_at, int(work_id)),
+            )
+
+    updated = get_work(int(work_id))
+    if updated is None:
+        raise ValueError("评分已写入，但无法重新读取作品。")
+    return updated
 
 
 def upsert_seasonal_anime(items: Iterable[dict[str, Any]], year: int, season_code: str, month_label: str) -> int:

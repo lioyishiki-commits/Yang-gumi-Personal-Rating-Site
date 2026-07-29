@@ -4,7 +4,9 @@ import hashlib
 import json
 import os
 import random
+import shutil
 import subprocess
+import tempfile
 import threading
 import time
 from datetime import datetime, timedelta
@@ -44,16 +46,16 @@ def load_source_folders() -> dict[str, Path]:
 
 
 LOCAL_ROOTS = load_source_folders()
-REFRESH_QUOTAS = {"portrait": 400, "wallpaper": 100}
-MAX_NEW_ASSETS_PER_RESCAN = 3
-ALLOWED_SUFFIXES = {".jpg", ".jpeg", ".jfif", ".png", ".webp", ".avif", ".bmp", ".gif"}
+REFRESH_QUOTAS = {"portrait": 12000, "wallpaper": 12000}
+ALLOWED_SUFFIXES = {".jpg", ".jpeg", ".jfif", ".png", ".webp", ".avif", ".bmp", ".gif", ".ico"}
 MAX_FILE_SIZE = 100 * 1024 * 1024
-MAX_INDEX_ITEMS = 500
-MAX_SAMPLE_ITEMS = 500
-MAX_CACHED_ASSETS = 900
+MAX_INDEX_ITEMS = 12000
+MAX_SAMPLE_ITEMS = 12000
+MAX_CACHED_ASSETS = 13000
 MAX_SCAN_FILES = 12000
 MAX_SCAN_DEPTH = 12
 TARGET_ASPECTS = {"portrait": 2 / 3, "wallpaper": 16 / 9}
+SAFE_DIRECT_DECODE_PIXELS = 80_000_000
 
 _refresh_lock = threading.Lock()
 _scheduler_lock = threading.Lock()
@@ -81,7 +83,7 @@ def set_source_folder(kind: str, folder: str | Path) -> Path:
 
 
 def choose_source_folder(kind: str) -> Path | None:
-    """Open the local desktop folder chooser and persist the selected source."""
+    """Open a separate topmost Windows folder chooser and persist the selected source."""
     if kind not in DEFAULT_LOCAL_ROOTS:
         raise ValueError(f"Unsupported daily art source: {kind}")
     initial = LOCAL_ROOTS.get(kind, DEFAULT_LOCAL_ROOTS[kind])
@@ -89,11 +91,10 @@ def choose_source_folder(kind: str) -> Path | None:
         initial = initial.parent if initial.parent.exists() else Path.home()
     label = "竖屏" if kind == "portrait" else "壁纸"
 
-    if os.name == "nt":
-        def ps_literal(value: str) -> str:
-            return "'" + value.replace("'", "''") + "'"
+    def ps_literal(value: str) -> str:
+        return "'" + value.replace("'", "''") + "'"
 
-        script = f"""
+    script = f"""
 Add-Type -AssemblyName System.Windows.Forms
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 $owner = New-Object System.Windows.Forms.Form
@@ -119,46 +120,24 @@ try {{
     $owner.Dispose()
 }}
 """
-        try:
-            completed = subprocess.run(
-                ["powershell.exe", "-NoLogo", "-NoProfile", "-STA", "-Command", script],
-                cwd=ROOT,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                timeout=900,
-                check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise RuntimeError("Windows folder chooser is unavailable") from exc
-        if completed.returncode != 0:
-            message = completed.stderr.strip() or "Windows folder chooser failed"
-            raise RuntimeError(message)
-        selected = completed.stdout.strip()
-    else:
-        try:
-            import tkinter as tk
-            from tkinter import filedialog
-
-            owner = tk.Tk()
-            owner.withdraw()
-            owner.attributes("-topmost", True)
-            try:
-                selected = filedialog.askdirectory(
-                    parent=owner,
-                    title=f"选择{label}美图文件夹",
-                    initialdir=str(initial),
-                    mustexist=True,
-                )
-            finally:
-                owner.destroy()
-        except Exception as exc:
-            raise RuntimeError(
-                "Desktop folder chooser is unavailable; configure YANGGUMI_PORTRAIT_DIR "
-                "or YANGGUMI_WALLPAPER_DIR before starting Yang-gumi"
-            ) from exc
+    try:
+        completed = subprocess.run(
+            ["powershell.exe", "-NoLogo", "-NoProfile", "-STA", "-Command", script],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            timeout=900,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError("Windows folder chooser is unavailable") from exc
+    if completed.returncode != 0:
+        message = completed.stderr.strip() or "Windows folder chooser failed"
+        raise RuntimeError(message)
+    selected = completed.stdout.strip()
     return set_source_folder(kind, selected) if selected else None
 
 
@@ -167,27 +146,26 @@ def _hour_slot(now: datetime | None = None) -> str:
 
 
 def _iter_shallow(root: Path):
-    """Yield files recursively from the folder explicitly selected by the user.
+    """Yield image candidates recursively from the folder explicitly chosen by the user.
 
-    Image libraries copied from another computer are often grouped several folders
-    deep.  The previous one-level scan silently missed those files.  Traversal stays
-    bounded and never follows directory links, so a mistaken selection cannot turn
-    into an unbounded disk scan.
+    Collections copied from another computer are commonly grouped several folders deep.
+    The old two-level scan silently missed those files.  Keep traversal bounded and never
+    follow directory links so choosing a library cannot accidentally scan an entire disk.
     """
     stack: list[tuple[Path, int]] = [(root, 0)]
-    examined = 0
-    while stack and examined < MAX_SCAN_FILES:
+    yielded = 0
+    while stack and yielded < MAX_SCAN_FILES:
         current, depth = stack.pop()
         try:
             children = list(current.iterdir())
         except OSError:
             continue
         for child in children:
-            if examined >= MAX_SCAN_FILES:
+            if yielded >= MAX_SCAN_FILES:
                 break
             try:
                 if child.is_file():
-                    examined += 1
+                    yielded += 1
                     yield child
                 elif depth < MAX_SCAN_DEPTH and child.is_dir() and not child.is_symlink():
                     stack.append((child, depth + 1))
@@ -305,10 +283,91 @@ def _homepage_asset(image: Image.Image, kind: str, focus: str) -> Image.Image:
     return cropped.resize(target_size, Image.Resampling.LANCZOS)
 
 
+def _source_dimensions(path: Path) -> tuple[int, int]:
+    """Read trusted local image dimensions without triggering Pillow's bomb guard."""
+    previous_limit = Image.MAX_IMAGE_PIXELS
+    Image.MAX_IMAGE_PIXELS = None
+    try:
+        with Image.open(path) as source:
+            return int(source.width), int(source.height)
+    finally:
+        Image.MAX_IMAGE_PIXELS = previous_limit
+
+
+def _ffmpeg_preview(path: Path) -> Image.Image:
+    """Decode an ultra-large local image into a lossless, bounded work preview."""
+    executable = ""
+    try:
+        import imageio_ffmpeg
+
+        executable = imageio_ffmpeg.get_ffmpeg_exe()
+    except (ImportError, OSError, RuntimeError):
+        executable = ""
+    executable = executable or shutil.which("ffmpeg") or ""
+    if not executable:
+        raise OSError("ffmpeg is required to index this ultra-large image")
+    ASSET_DIR.mkdir(parents=True, exist_ok=True)
+    handle = tempfile.NamedTemporaryFile(
+        prefix="yanggumi-large-", suffix=".png", dir=ASSET_DIR, delete=False
+    )
+    temporary = Path(handle.name)
+    handle.close()
+    try:
+        completed = subprocess.run(
+            [
+                executable, "-nostdin", "-v", "error", "-y", "-i", str(path),
+                "-vf", "scale=2160:2160:force_original_aspect_ratio=decrease",
+                "-frames:v", "1", str(temporary),
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            timeout=180,
+            check=False,
+        )
+        if completed.returncode != 0 or not temporary.exists() or temporary.stat().st_size <= 0:
+            message = completed.stderr.decode("utf-8", errors="replace").strip()
+            raise OSError(message or "ffmpeg could not decode the image")
+        with Image.open(temporary) as decoded:
+            image = ImageOps.exif_transpose(decoded).convert("RGB")
+            image.load()
+        return image
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _jpeg_preview(path: Path) -> Image.Image:
+    """Use JPEG decoder downsampling before allocation for extreme dimensions."""
+    previous_limit = Image.MAX_IMAGE_PIXELS
+    Image.MAX_IMAGE_PIXELS = None
+    try:
+        with Image.open(path) as source:
+            source.draft("RGB", (2160, 2160))
+            image = ImageOps.exif_transpose(source).convert("RGB")
+            image.thumbnail((2160, 2160), Image.Resampling.LANCZOS)
+            image.load()
+        return image
+    finally:
+        Image.MAX_IMAGE_PIXELS = previous_limit
+
+
+def _decode_source_image(path: Path, file_size: int) -> tuple[Image.Image, int, int]:
+    """Decode every supported source while bounding peak memory for huge PNG/JPEG files."""
+    width, height = _source_dimensions(path)
+    if file_size > MAX_FILE_SIZE or width * height > SAFE_DIRECT_DECODE_PIXELS:
+        if path.suffix.casefold() in {".jpg", ".jpeg", ".jfif"}:
+            return _jpeg_preview(path), width, height
+        return _ffmpeg_preview(path), width, height
+    with Image.open(path) as source:
+        image = ImageOps.exif_transpose(source).convert("RGB")
+        image.load()
+    return image, width, height
+
+
 def rebuild_manifest(only_kind: str | None = None) -> dict[str, Any]:
     """Refresh the index while reusing every unchanged cached image.
 
-    Re-scanning an existing library should be a metadata operation.  Source
+    Re-scanning an existing library should be a metadata operation. Source
     images are decoded and resized only when they are new or have changed.
     """
     if only_kind is not None and only_kind not in LOCAL_ROOTS:
@@ -377,7 +436,7 @@ def rebuild_manifest(only_kind: str | None = None) -> dict[str, Any]:
                     (reusable_paths if unchanged else changed_paths).append(path)
                 random.SystemRandom().shuffle(reusable_paths)
                 random.SystemRandom().shuffle(changed_paths)
-                paths = changed_paths[:MAX_NEW_ASSETS_PER_RESCAN] + reusable_paths
+                paths = changed_paths + reusable_paths
             else:
                 random.SystemRandom().shuffle(paths)
             accepted = 0
@@ -392,7 +451,6 @@ def rebuild_manifest(only_kind: str | None = None) -> dict[str, Any]:
                         continue
                     if stat.st_size > MAX_FILE_SIZE:
                         oversized += 1
-                        continue
                     asset_name = _asset_name(path, stat.st_mtime)
                     cached_asset = ASSET_DIR / asset_name
                     cached = previous_by_path.get(str(path)) or {}
@@ -406,13 +464,10 @@ def rebuild_manifest(only_kind: str | None = None) -> dict[str, Any]:
                         entries.append({**cached, "path": str(path), "asset": f"daily_art/{previous_cached_asset.name}"})
                         accepted += 1
                         continue
-                    with Image.open(path) as source:
-                        image = ImageOps.exif_transpose(source).convert("RGB")
-                        image.load()
-                        width, height = image.size
-                        focus = _focus_position(_trim_plain_border(image))
-                        asset_image = _homepage_asset(image, kind, focus)
-                        asset_image.save(cached_asset, "WEBP", quality=80, method=3)
+                    image, width, height = _decode_source_image(path, stat.st_size)
+                    focus = _focus_position(_trim_plain_border(image))
+                    asset_image = _homepage_asset(image, kind, focus)
+                    asset_image.save(cached_asset, "WEBP", quality=90, method=4)
                     entries.append({
                         "path": str(path), "size": stat.st_size, "width": width, "height": height,
                         "type": kind, "mtime": stat.st_mtime, "asset": f"daily_art/{asset_name}",
@@ -461,7 +516,7 @@ def _read_manifest(validate: bool = True) -> dict[str, Any]:
             if item.get("type") not in LOCAL_ROOTS or not item.get("asset"):
                 continue
             asset = ASSET_DIR / Path(str(item["asset"])).name
-            if (not validate or asset.exists()) and int(item.get("size") or 0) <= MAX_FILE_SIZE:
+            if not validate or asset.exists():
                 normalized = dict(item)
                 normalized["key"] = str(item.get("key") or _stable_key(item.get("asset")))
                 normalized["group"] = str(item.get("group") or normalized["key"])

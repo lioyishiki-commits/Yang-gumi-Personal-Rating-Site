@@ -22,11 +22,11 @@ def calculate_score_diff(item: dict[str, Any]) -> float | None:
     mine, public = item.get("score_total"), item.get("bangumi_score")
     if mine is None or public is None:
         return None
-    return round(float(mine) - float(public), 1)
+    return round(float(mine) - float(public), 2)
 
 
 def format_diff(value: Any) -> str:
-    return "—" if value is None else f"{float(value):+.1f}"
+    return "—" if value is None else f"{float(value):+.2f}"
 
 
 def _bounds(label: str) -> tuple[float, float | None]:
@@ -124,4 +124,4 @@ def sort_null_last(
 
 def average_non_null(items: Iterable[dict[str, Any]], field_name: str) -> float | None:
     values = [float(item[field_name]) for item in items if item.get(field_name) is not None]
-    return round(sum(values) / len(values), 1) if values else None
+    return round(sum(values) / len(values), 2) if values else None
