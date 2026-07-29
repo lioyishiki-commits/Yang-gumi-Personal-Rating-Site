@@ -18,7 +18,7 @@ from typing import Any
 
 OWNER = "lioyishiki-commits"
 REPOSITORY = "Yang-gumi-Personal-Rating-Site"
-BRANCH = "main"
+BRANCH = os.environ.get("YANGGUMI_UPDATE_BRANCH", "main").strip() or "main"
 INITIAL_TAG = "v1.0.0"
 INITIAL_VERSION = "1.0.0"
 ROOT = Path(os.environ.get("YANGGUMI_UPDATE_ROOT") or Path(__file__).resolve().parent)
@@ -29,10 +29,16 @@ API_BASE = os.environ.get("YANGGUMI_UPDATE_API_BASE") or f"https://api.github.co
 RAW_BASE = os.environ.get("YANGGUMI_UPDATE_RAW_BASE") or f"https://raw.githubusercontent.com/{OWNER}/{REPOSITORY}"
 
 PROTECTED_PREFIXES = (
-    ".git/", ".venv/", "backups/", "data/", "exports/", "logs/", "work/",
+    ".git/", ".venv/", "backups/", "backgrounds/", "covers/", "data/",
+    "exports/", "logs/", "work/", "artifacts/", "static/daily_art/",
+    "static/backgrounds/", "static/bangumi_rank_posters/",
+    "static/seasonal_posters/", "static/share_assets/", "tools/xpos/",
+    "tools/streamlit_modern_compat/", "tools/hostc_runtime/", "tools/expose/",
+    "tools/wormhole/",
 )
 PROTECTED_EXACT = {
     ".yanggumi-update-state.json", ".streamlit/secrets.toml", "VERSION",
+    "public_data.json", "ShiKiShare.exe", "tools/cloudflared.exe",
 }
 REQUIRED_AFTER_UPDATE = ("app.py", "database.py", "启动 Yang-gumi.bat", "update_yanggumi.py")
 
@@ -72,22 +78,33 @@ def _safe_relative(value: str) -> str:
 
 def _protected(path: str) -> bool:
     normalized = _safe_relative(path)
-    return normalized in PROTECTED_EXACT or normalized.startswith(PROTECTED_PREFIXES)
+    lowered = normalized.casefold()
+    private_suffixes = (".db", ".db-wal", ".db-shm", ".sqlite", ".sqlite3", ".token")
+    return (
+        normalized in PROTECTED_EXACT
+        or normalized.startswith(PROTECTED_PREFIXES)
+        or lowered.endswith(private_suffixes)
+    )
 
 
 def _read_version() -> str:
+    try:
+        value = VERSION_FILE.read_text(encoding="utf-8").strip()
+        if value:
+            _parse_version(value)
+            return value
+    except OSError:
+        pass
     if STATE_FILE.exists():
         try:
             state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
-            if state.get("version"):
-                return str(state["version"])
+            value = str(state.get("version") or "").strip()
+            if value:
+                _parse_version(value)
+                return value
         except (OSError, json.JSONDecodeError):
             pass
-    try:
-        value = VERSION_FILE.read_text(encoding="utf-8").strip()
-        return value if value else INITIAL_VERSION
-    except OSError:
-        return INITIAL_VERSION
+    return INITIAL_VERSION
 
 
 def _load_state() -> dict[str, Any]:
@@ -101,14 +118,15 @@ def _load_state() -> dict[str, Any]:
     return {}
 
 
-def _tag_commit() -> str:
-    payload = _request_json(f"{API_BASE}/git/ref/tags/{urllib.parse.quote(INITIAL_TAG, safe='')}")
+def _tag_commit(version: str = INITIAL_VERSION) -> str:
+    tag = f"v{version}"
+    payload = _request_json(f"{API_BASE}/git/ref/tags/{urllib.parse.quote(tag, safe='')}")
     obj = payload.get("object") or {}
     sha = str(obj.get("sha") or "")
     if obj.get("type") == "tag" and sha:
         sha = str((_request_json(f"{API_BASE}/git/tags/{sha}").get("object") or {}).get("sha") or "")
     if not sha:
-        raise UpdateError(f"GitHub 缺少初始版本标记 {INITIAL_TAG}。")
+        raise UpdateError(f"GitHub 缺少当前版本标记 {tag}，为避免下载错误文件，已停止更新。")
     return sha
 
 
@@ -122,10 +140,35 @@ def _head_commit() -> str:
 
 def _parse_version(version: str) -> tuple[int, int, int]:
     try:
-        major, minor, patch = (int(part) for part in version.strip().split(".", 2))
+        parts = version.strip().split(".")
+        if len(parts) != 3 or not all(part.isdigit() for part in parts):
+            raise ValueError
+        major, minor, patch = (int(part) for part in parts)
         return major, minor, patch
     except (TypeError, ValueError):
-        return 1, 0, 0
+        raise UpdateError(f"版本号格式无效：{version!r}。应为类似 1.1.0 的三段数字。")
+
+
+def _remote_version(head: str) -> str:
+    url = f"{RAW_BASE}/{urllib.parse.quote(head, safe='')}/VERSION"
+    try:
+        version = _download(url).decode("utf-8-sig").strip()
+    except UnicodeDecodeError as exc:
+        raise UpdateError("GitHub VERSION 文件不是有效的 UTF-8 文本。") from exc
+    _parse_version(version)
+    return version
+
+
+def _version_level(current_version: str, target_version: str) -> tuple[str, str]:
+    current = _parse_version(current_version)
+    target = _parse_version(target_version)
+    if target <= current:
+        return "none", "版本未提高"
+    if target[0] != current[0]:
+        return "major", "GitHub VERSION 指定了主版本升级"
+    if target[1] != current[1]:
+        return "minor", "GitHub VERSION 指定了功能版本升级"
+    return "patch", "GitHub VERSION 指定了修复版本升级"
 
 
 def _classify(compare: dict[str, Any]) -> tuple[str, str]:
@@ -208,13 +251,6 @@ def _restore(backup: Path) -> None:
             shutil.copy2(saved, target)
         elif target.exists() and target.is_file():
             target.unlink()
-    data_root = backup / "data_snapshot"
-    if data_root.exists():
-        target_data = ROOT / "data"
-        target_data.mkdir(parents=True, exist_ok=True)
-        for source in data_root.iterdir():
-            if source.is_file():
-                shutil.copy2(source, target_data / source.name)
 
 
 def _download_changes(files: list[dict[str, Any]], head: str, staging: Path) -> list[dict[str, Any]]:
@@ -282,16 +318,31 @@ def check_and_update() -> int:
     current_version = _read_version()
     print(f"当前网站版本：{current_version}")
     print("正在检查 GitHub 仓库更新……")
-    state = _load_state()
-    base = str(state.get("commit") or _tag_commit())
     head = _head_commit()
-    if base == head:
+    target_version = _remote_version(head)
+    current_tuple = _parse_version(current_version)
+    target_tuple = _parse_version(target_version)
+    if current_tuple > target_tuple:
+        raise UpdateError(
+            f"本地版本 {current_version} 高于 GitHub 的 {target_version}，"
+            "已停止以避免降级覆盖。"
+        )
+    state = _load_state()
+    if current_tuple == target_tuple:
+        if str(state.get("commit") or "") != head or str(state.get("version") or "") != current_version:
+            _write_state(current_version, head, "none")
         print(f"GitHub 仓库没有更新。当前已是最新版本 {current_version}。")
         print("网站和更新程序均未进行任何修改。")
         return 0
+    state_version = str(state.get("version") or "")
+    base = str(state.get("commit") or "") if state_version == current_version else ""
+    if not base:
+        base = _tag_commit(current_version)
+    if base == head:
+        raise UpdateError("GitHub 提交没有变化，但 VERSION 却提高了，已停止以避免错误更新。")
     compare = _request_json(f"{API_BASE}/compare/{urllib.parse.quote(base, safe='')}...{urllib.parse.quote(head, safe='')}")
-    if compare.get("status") == "behind":
-        raise UpdateError("本地记录比 GitHub 主分支更新，已停止以避免覆盖。")
+    if compare.get("status") not in {"ahead", "identical"}:
+        raise UpdateError("本地更新记录与 GitHub 目标分支不在同一升级路径，已停止以避免覆盖。")
     files = compare.get("files") or []
     if not files:
         _write_state(current_version, head, "none")
@@ -299,8 +350,7 @@ def check_and_update() -> int:
         return 0
     if len(files) >= 300:
         raise UpdateError("本次更新文件过多，GitHub 比较结果可能不完整；请使用完整安装包。")
-    level, reason = _classify(compare)
-    target_version = _bump(current_version, level)
+    level, reason = _version_level(current_version, target_version)
     applicable_paths = []
     for item in files:
         filename = _safe_relative(item.get("filename") or "")
@@ -311,7 +361,10 @@ def check_and_update() -> int:
                 applicable_paths.append(_safe_relative(previous))
     print(f"发现更新：{current_version}  →  {target_version}")
     print(f"版本判断：{level.upper()}（{reason}）")
-    print(f"将更新 {len(set(applicable_paths))} 个程序文件；本地数据库、备份和私人配置不会下载或覆盖。")
+    print(
+        f"将更新 {len(set(applicable_paths))} 个程序文件；本地数据库、海报、背景、"
+        "备份、导出和私人配置不会下载、删除或覆盖。"
+    )
     choice = os.environ.get("YANGGUMI_UPDATE_SKIP_PROMPT", "").strip().upper()
     if choice not in {"Y", "N"}:
         choice = input("是否更新？请输入 Y 或 N：").strip().upper()
@@ -329,7 +382,7 @@ def check_and_update() -> int:
         _write_state(target_version, head, level)
     except Exception:
         _restore(backup)
-        print("更新失败，已自动恢复到更新前状态。")
+        print("更新失败，已自动恢复更新前的程序文件；数据库和用户记录始终未被改动。")
         raise
     print(f"更新成功。当前网站版本：{target_version}")
     print("请关闭并重新启动 Yang-gumi，使新版本完全生效。")
@@ -352,7 +405,7 @@ def rollback_latest() -> int:
         print("已取消恢复。")
         return 0
     _restore(backup)
-    print("已恢复最近一次更新前的程序与数据库快照。请重新启动 Yang-gumi。")
+    print("已恢复最近一次更新前的程序文件。数据库和用户记录没有被覆盖。请重新启动 Yang-gumi。")
     return 0
 
 
