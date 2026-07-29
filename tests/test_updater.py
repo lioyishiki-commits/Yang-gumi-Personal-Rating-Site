@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import tempfile
 import unittest
@@ -41,11 +42,11 @@ class UpdaterTest(unittest.TestCase):
             item.stop()
         self.temp.cleanup()
 
-    def test_delta_update_versions_backs_up_and_rolls_back(self):
+    def test_delta_update_uses_remote_version_and_program_only_rollback(self):
         new_app = b"VALUE = 'new'\n"
         compare = {
             "status": "ahead",
-            "commits": [{"commit": {"message": "fix: save ratings"}}],
+            "commits": [{"commit": {"message": "feat: this must not invent 1.1.0"}}],
             "files": [{
                 "filename": "app.py", "status": "modified",
                 "sha": blob_sha(new_app), "changes": 1,
@@ -54,6 +55,7 @@ class UpdaterTest(unittest.TestCase):
         with (
             patch.object(updater, "_tag_commit", return_value="base"),
             patch.object(updater, "_head_commit", return_value="head"),
+            patch.object(updater, "_remote_version", return_value="1.0.1"),
             patch.object(updater, "_request_json", return_value=compare),
             patch.object(updater, "_download", return_value=new_app),
             patch.dict(os.environ, {"YANGGUMI_UPDATE_SKIP_PROMPT": "Y"}),
@@ -70,21 +72,49 @@ class UpdaterTest(unittest.TestCase):
             self.assertEqual(updater.rollback_latest(), 0)
         self.assertEqual((self.root / "app.py").read_text(encoding="utf-8"), "VALUE = 'old'\n")
         self.assertEqual((self.root / "VERSION").read_text(encoding="utf-8"), "1.0.0\n")
-        self.assertEqual((self.root / "data" / "acgn.db").read_bytes(), b"private-db")
+        self.assertEqual((self.root / "data" / "acgn.db").read_bytes(), b"changed-db")
 
-    def test_no_update_changes_nothing(self):
+    def test_fresh_110_install_does_not_invent_120(self):
+        (self.root / "VERSION").write_text("1.1.0\n", encoding="utf-8")
         with (
-            patch.object(updater, "_tag_commit", return_value="same"),
-            patch.object(updater, "_head_commit", return_value="same"),
+            patch.object(updater, "_head_commit", return_value="v110-head"),
+            patch.object(updater, "_remote_version", return_value="1.1.0"),
+            patch.object(updater, "_tag_commit") as tag_commit,
+            patch.object(updater, "_request_json") as request_json,
         ):
             self.assertEqual(updater.check_and_update(), 0)
-        self.assertFalse(updater.STATE_FILE.exists())
-        self.assertEqual((self.root / "VERSION").read_text(encoding="utf-8"), "1.0.0\n")
+        tag_commit.assert_not_called()
+        request_json.assert_not_called()
+        self.assertEqual((self.root / "VERSION").read_text(encoding="utf-8"), "1.1.0\n")
+        state = json.loads(updater.STATE_FILE.read_text(encoding="utf-8"))
+        self.assertEqual(state["version"], "1.1.0")
+        self.assertEqual(state["commit"], "v110-head")
+
+    def test_user_data_paths_are_never_remote_update_targets(self):
+        protected = (
+            "data/acgn.db",
+            "data/acgn.db-wal",
+            "covers/my-poster.jpg",
+            "backgrounds/mine.png",
+            "backups/snapshot.db",
+            "exports/ratings.xlsx",
+            "public_data.json",
+            ".streamlit/secrets.toml",
+            "static/daily_art/today.jpg",
+            "static/share_assets/private-cover.jpg",
+            "anywhere/private.sqlite3",
+        )
+        for path in protected:
+            self.assertTrue(updater._protected(path), path)
+        self.assertFalse(updater._protected("app.py"))
+        self.assertFalse(updater._protected(".streamlit/config.toml"))
 
     def test_semantic_version_classification(self):
         self.assertEqual(updater._classify({"commits": [{"commit": {"message": "fix: bug"}}], "files": []})[0], "patch")
         self.assertEqual(updater._classify({"commits": [{"commit": {"message": "feat: new page"}}], "files": []})[0], "minor")
         self.assertEqual(updater._classify({"commits": [{"commit": {"message": "BREAKING CHANGE"}}], "files": []})[0], "major")
+        self.assertEqual(updater._version_level("1.1.0", "1.1.1")[0], "patch")
+        self.assertEqual(updater._version_level("1.1.0", "1.2.0")[0], "minor")
 
 
 if __name__ == "__main__":
