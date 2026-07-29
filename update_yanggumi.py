@@ -336,11 +336,23 @@ def check_and_update() -> int:
         return 0
     state_version = str(state.get("version") or "")
     base = str(state.get("commit") or "") if state_version == current_version else ""
+    state_base = base
     if not base:
         base = _tag_commit(current_version)
     if base == head:
         raise UpdateError("GitHub 提交没有变化，但 VERSION 却提高了，已停止以避免错误更新。")
     compare = _request_json(f"{API_BASE}/compare/{urllib.parse.quote(base, safe='')}...{urllib.parse.quote(head, safe='')}")
+    if compare.get("status") not in {"ahead", "identical"} and state_base:
+        official_base = _tag_commit(current_version)
+        if official_base != base:
+            official_compare = _request_json(
+                f"{API_BASE}/compare/{urllib.parse.quote(official_base, safe='')}..."
+                f"{urllib.parse.quote(head, safe='')}"
+            )
+            if official_compare.get("status") in {"ahead", "identical"}:
+                print("本地更新记录指向的历史提交已失效；已根据当前官方版本标签重新确认升级路径。")
+                base = official_base
+                compare = official_compare
     if compare.get("status") not in {"ahead", "identical"}:
         raise UpdateError("本地更新记录与 GitHub 目标分支不在同一升级路径，已停止以避免覆盖。")
     files = compare.get("files") or []
