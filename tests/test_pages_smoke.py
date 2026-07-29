@@ -21,10 +21,20 @@ class PageSmokeTest(unittest.TestCase):
     def test_compare_exposes_all_filter_dimensions(self):
         app = self.open_page("评分对比")
         labels = {widget.label for widget in app.selectbox}
-        self.assertTrue({"榜单", "类型", "状态", "我的评分区间", "Bangumi 评分区间", "差值方向", "差值绝对值", "排序"}.issubset(labels))
+        self.assertTrue({
+            "榜单", "类型", "状态", "评分小项目", "分项排序", "分项每页",
+        }.issubset(labels))
+        self.assertTrue({
+            "我的评分区间", "Bangumi 评分区间", "差值方向",
+            "差值绝对值", "排序", "当前结果每页",
+        }.isdisjoint(labels))
         board = next(widget for widget in app.selectbox if widget.label == "榜单")
         self.assertIn("Bangumi 高分但我个人无感", board.options)
         self.assertIn("Bangumi 一般但我很喜欢", board.options)
+        dimension = next(widget for widget in app.selectbox if widget.label == "评分小项目")
+        self.assertIn("作品本体 · 剧情", dimension.options)
+        page_size = next(widget for widget in app.selectbox if widget.label == "分项每页")
+        self.assertEqual(page_size.value, 24)
 
     def test_unscored_inputs_are_empty_instead_of_zero(self):
         app = self.open_page("新增条目")

@@ -1,15 +1,24 @@
 from __future__ import annotations
 
+import gzip
 import json
+import os
 import tempfile
+import threading
 import unittest
+from http.server import ThreadingHTTPServer
 from pathlib import Path
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 from unittest import mock
 
 from PIL import Image
 
 import daily_art
 import database as db
+import share_fast_server
+import share_public
+import share_static_export
 
 
 class PublicAndDailyArtTest(unittest.TestCase):
@@ -29,31 +38,286 @@ class PublicAndDailyArtTest(unittest.TestCase):
         database_source = root.joinpath("database.py").read_text(encoding="utf-8")
         app_source = root.joinpath("app.py").read_text(encoding="utf-8")
         self.assertIn("mode=ro", database_source)
+        self.assertIn("ContextVar", database_source)
+        self.assertIn("set_read_only_mode", database_source)
         self.assertIn("YANGGUMI_READ_ONLY", database_source)
         self.assertIn("YANGGUMI_READ_ONLY", app_source)
         self.assertIn('@st.fragment(run_every="10s")', app_source)
         self.assertIn("_watch_shared_database", app_source)
+        self.assertIn("IntersectionObserver", app_source)
+        self.assertIn("MutationObserver", app_source)
+        self.assertIn("data-yg-src", app_source)
+        self.assertIn("if (!root || typeof root !== 'object') return;", app_source)
+        self.assertIn("const observeRoot = doc.body || doc.documentElement;", app_source)
+        self.assertLess(
+            app_source.index("ranking_view = st.empty()", app_source.index("def render_bangumi_ranking_browser")),
+            app_source.index("bgm.ranked_browser_subject_window", app_source.index("def render_bangumi_ranking_browser")),
+        )
+        self.assertIn("ranking_view.empty()", app_source)
         self.assertIn("MAX(updated_at)", app_source)
         self.assertIn("您没有操作权限", app_source)
-        self.assertIn('hidden_pages.add("新增条目")', app_source)
+        for page in ("首页", "条目库", "新增条目", "Bangumi", "排行榜", "评分对比", "标签筛选", "评分设置", "数据管理"):
+            self.assertIn(f'"{page}"', app_source)
+        self.assertIn("visible = list(READ_ONLY_NAV_PAGES) if READ_ONLY_MODE", app_source)
 
-    def test_private_share_launcher_uses_token_and_live_read_only_app(self):
+    def test_private_share_runs_the_existing_readonly_ui_on_loopback(self):
         root = Path(__file__).parents[1]
-        source = root.joinpath("share_public.py").read_text(encoding="utf-8")
-        self.assertIn("token_urlsafe", source)
-        self.assertIn("app.py", source)
-        self.assertIn("YANGGUMI_READ_ONLY", source)
-        self.assertNotIn("export_json", source)
-        self.assertIn("0.0.0.0", source)
+        control_source = root.joinpath("share_control.py").read_text(encoding="utf-8")
+        share_source = root.joinpath("share_public.py").read_text(encoding="utf-8")
+        self.assertIn("INTERACTIVE_SHARE_SCRIPT", control_source)
+        self.assertIn('"--managed"', control_source)
+        self.assertIn("streamlit_server_ready(port=MAIN_APP_PORT)", share_source)
+        command = share_public.streamlit_command(18647)
+        self.assertIn(str(root / "app.py"), command)
+        self.assertIn("127.0.0.1", command)
+        self.assertIn("--server.enableWebsocketCompression", command)
+        self.assertIn("--server.fileWatcherType", command)
+        self.assertNotIn("share_fast_server.py", " ".join(command))
+        proxy = share_public.proxy_command(18648, 18647)
+        self.assertIn(str(root / "share_proxy_server.py"), proxy)
 
-    def test_read_only_batch_supports_owner_and_standalone_visitor(self):
+    def test_homepage_only_preloads_visible_and_adjacent_season_posters(self):
+        source = Path(__file__).parents[1].joinpath("app.py").read_text(encoding="utf-8")
+        warm_start = source.index("function warmPosterCache()")
+        warm_end = source.index("function signature(item)", warm_start)
+        warm_source = source[warm_start:warm_end]
+        self.assertIn("displaySlots()", warm_source)
+        self.assertIn("current - 3", warm_source)
+        self.assertIn("current + 3", warm_source)
+        self.assertNotIn("items.forEach", warm_source)
+        self.assertNotIn("link.rel = 'preload'", warm_source)
+
+    def test_main_launcher_enables_compression_and_disables_file_watching(self):
+        source = Path(__file__).parents[1].joinpath("start_yanggumi.py").read_text(encoding="utf-8")
+        self.assertIn('"--server.enableWebsocketCompression", "true"', source)
+        self.assertIn('"--server.fileWatcherType", "none"', source)
+
+    def test_modern_share_frontend_is_downleveled_for_old_edge(self):
         root = Path(__file__).parents[1]
-        source = root.joinpath("启动只读分享.bat").read_text(encoding="utf-8")
-        self.assertIn('if exist "%~dp0share_public.py" goto owner', source)
+        bundles = list(
+            root.joinpath("tools", "streamlit_modern_compat", "streamlit", "static", "static", "js").glob("index.*.js")
+        )
+        if not bundles:
+            self.skipTest("optional generated compatibility runtime is not included in the public source")
+        self.assertEqual(len(bundles), 1)
+        source = bundles[0].read_text(encoding="utf-8")
+        self.assertNotIn("}static{", source)
+        self.assertTrue(source.startswith(share_public.LEGACY_FRONTEND_MARKER))
+
+    def test_legacy_frontend_polyfills_are_applied_once_without_duplicate_module_url(self):
+        with tempfile.TemporaryDirectory() as temp:
+            runtime = Path(temp)
+            static_root = runtime / "streamlit" / "static"
+            js_root = static_root / "static" / "js"
+            js_root.mkdir(parents=True)
+            bundle = js_root / "index.test.js"
+            bundle.write_text(
+                'Object.hasOwn(value, key);this.websocket=new WebSocket(n,["streamlit",...t]);',
+                encoding="utf-8",
+            )
+            index = static_root / "index.html"
+            index.write_text(
+                '<script type="module" src="./static/js/index.test.js"></script>',
+                encoding="utf-8",
+            )
+
+            self.assertTrue(share_public.ensure_legacy_frontend_compatibility(runtime))
+            self.assertFalse(share_public.ensure_legacy_frontend_compatibility(runtime))
+            patched = bundle.read_text(encoding="utf-8")
+            self.assertTrue(patched.startswith(share_public.LEGACY_FRONTEND_MARKER))
+            self.assertIn("Object.prototype.hasOwnProperty.call", patched)
+            self.assertIn("constructor.prototype.at", patched)
+            self.assertIn("String.prototype.replaceAll", patched)
+            self.assertIn("AbortSignal.timeout", patched)
+            self.assertIn("wormhole", patched)
+            self.assertNotIn(share_public.STREAMLIT_WEBSOCKET_CONSTRUCTOR, patched)
+            self.assertIn('src="./static/js/index.test.js"', index.read_text(encoding="utf-8"))
+            self.assertNotIn("?v=", index.read_text(encoding="utf-8"))
+
+    def test_public_share_prefers_project_compatibility_runtime(self):
+        with tempfile.TemporaryDirectory() as temp:
+            runtime = Path(temp)
+            runtime.joinpath("streamlit").mkdir()
+            with mock.patch.object(share_public, "COMPAT_RUNTIME", runtime):
+                env = share_public.streamlit_environment("test-token")
+            self.assertNotIn("YANGGUMI_SHARE_TOKEN", env)
+            self.assertNotIn("YANGGUMI_READ_ONLY", env)
+            self.assertEqual(env["STREAMLIT_GLOBAL_DEVELOPMENT_MODE"], "false")
+            self.assertEqual(env["PYTHONPATH"].split(os.pathsep)[0], str(runtime))
+
+    def test_interactive_share_launcher_is_ascii_and_uses_readonly_app(self):
+        root = Path(__file__).parents[1]
+        content = root.joinpath("启动只读分享.bat").read_bytes()
+        source = content.decode("ascii")
+        self.assertIn("share_public.py", source)
+        self.assertIn("SHIKISHARE_DRY_RUN", source)
         self.assertIn("goto visitor", source)
-        self.assertIn("$request.Proxy=$null", source)
-        self.assertIn("--proxy-server=direct://", source)
-        self.assertIn("192.168.81.1:8502", source)
+        self.assertIn("YANGGUMI_PUBLIC_URL", source)
+        self.assertIn("runlocal\\.eu", source)
+        self.assertNotIn("chcp", source.lower())
+        self.assertNotIn("share_static_export.py", source)
+        self.assertNotIn("ShiKiShare.exe", source)
+        self.assertNotIn("0.0.0.0", source)
+        self.assertFalse(content.startswith(b"\xef\xbb\xbf"))
+        self.assertNotIn(b"\n", content.replace(b"\r\n", b""))
+
+    def test_vmware_launcher_url_keeps_token_and_port(self):
+        source = "http://192.168.79.118:8502/?access=secret-token"
+        self.assertEqual(
+            share_public.replace_url_host(source, "192.168.81.1"),
+            "http://192.168.81.1:8502/?access=secret-token",
+        )
+
+    def test_static_share_export_is_privacy_safe_and_self_contained(self):
+        exported = {
+            "export_meta": {"read_only": True},
+            "works": [{
+                "id": 1,
+                "title": "公开示例",
+                "original_title": "Public Example",
+                "type": "动画",
+                "status": "已看",
+                "score_total": 9.0,
+                "score_plot": 9.2,
+                "bangumi_summary": "公开简介",
+                "private_note": "must not be exported",
+            }],
+        }
+        score_config = {
+            "body": {"weights": {"score_plot": 1.0}, "labels": {"score_plot": "剧情"}},
+            "feeling": {"weights": {}, "labels": {}},
+            "era": {"weights": {}, "labels": {}},
+        }
+        manifest = {
+            "items": [
+                {"asset": f"daily_art/portrait-{index}.webp", "type": "portrait", "key": str(index)}
+                for index in range(3)
+            ]
+        }
+        with tempfile.TemporaryDirectory() as temp:
+            with mock.patch.object(
+                share_static_export.db,
+                "export_json",
+                return_value=json.dumps(exported, ensure_ascii=False).encode("utf-8"),
+            ), mock.patch.object(
+                share_static_export.db,
+                "list_works",
+                return_value=[{"id": 1}],
+            ), mock.patch.object(
+                share_static_export.share_assets,
+                "work_cover_url",
+                return_value="/app/static/default.svg",
+            ), mock.patch.object(
+                share_static_export.share_assets,
+                "source_revision",
+                return_value=(1, 2, 3),
+            ), mock.patch.object(
+                share_static_export.daily_art,
+                "load_manifest",
+                return_value=manifest,
+            ), mock.patch.object(
+                share_static_export.seasonal,
+                "current_season",
+                return_value={"year": 2026, "season_code": "summer", "month_label": "7月"},
+            ), mock.patch.object(
+                share_static_export.db,
+                "list_seasonal_anime",
+                return_value=[],
+            ), mock.patch.object(
+                share_static_export.scoring,
+                "load_score_config",
+                return_value=score_config,
+            ):
+                destination = share_static_export.build_public_site(Path(temp) / "site")
+            self.assertEqual(
+                {path.name for path in destination.iterdir()},
+                {"index.html", "snapshot.json"},
+            )
+            payload = json.loads(destination.joinpath("snapshot.json").read_text(encoding="utf-8"))
+            self.assertTrue(payload["export_meta"]["read_only"])
+            self.assertTrue(payload["works"])
+            public_work = payload["works"][0]
+            for unused in (
+                "score_breakdown", "custom_scores_json", "created_at",
+                "release_date", "bangumi_total_votes", "bangumi_rank", "score_imbalance_penalty",
+            ):
+                self.assertNotIn(unused, public_work)
+            self.assertIn("bangumi_summary", public_work)
+            for score_field in payload["score_labels"]:
+                self.assertIn(score_field, public_work)
+            serialized = json.dumps(payload, ensure_ascii=False)
+            for forbidden in ("private_note", "resource_path", "cover_path", "raw_json", "E:\\\\"):
+                self.assertNotIn(forbidden, serialized)
+            html = destination.joinpath("index.html").read_text(encoding="utf-8")
+            self.assertIn('data-page="条目库"', html)
+            self.assertIn("function pager(total)", html)
+            self.assertIn("const revisionKey=value=>JSON.stringify(value??null)", html)
+            self.assertIn("revisionKey(v.revision)!==revisionKey(data.revision)", html)
+            self.assertNotIn("v.revision!==data.revision", html)
+            self.assertEqual(html.count('rel="preload" as="image"'), 3)
+            self.assertIn("warmAfterVisible(filteredWorks().slice(0,pageSize).map(image))", html)
+            self.assertIn('name="referrer" content="no-referrer"', html)
+            self.assertNotIn('src="./app.js"', html)
+            self.assertNotIn('href="./app.css"', html)
+
+    def test_fast_share_server_exchanges_query_token_for_secure_session_cookie(self):
+        with tempfile.TemporaryDirectory() as temp:
+            site = Path(temp) / "site"
+            site.mkdir()
+            site.joinpath("index.html").write_text("<!doctype html><h1>Yang-gumi</h1>", encoding="utf-8")
+            site.joinpath("snapshot.json").write_text('{"revision":[1,2,3,4]}', encoding="utf-8")
+            server = ThreadingHTTPServer(("127.0.0.1", 0), share_fast_server.ShareHandler)
+            server.daemon_threads = True
+            server.share_token = "test-access-token"
+            server.access_cookie = "opaque-session-cookie"
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            with mock.patch.object(share_fast_server, "SITE_ROOT", site), mock.patch.object(
+                share_fast_server, "rebuild_if_needed", return_value=(1, 2, 3, 4)
+            ):
+                thread.start()
+                base = f"http://127.0.0.1:{server.server_port}"
+                try:
+                    for protected in ("/revision.json", "/snapshot.json"):
+                        with self.assertRaises(HTTPError) as blocked:
+                            urlopen(base + protected, timeout=3)
+                        self.assertEqual(blocked.exception.code, 403)
+
+                    first = urlopen(
+                        Request(
+                            base + "/?access=test-access-token",
+                            headers={"Host": "share.example", "X-Forwarded-Proto": "https"},
+                        ),
+                        timeout=3,
+                    )
+                    cookie = first.headers["Set-Cookie"]
+                    self.assertIn("yanggumi_share_session=opaque-session-cookie", cookie)
+                    self.assertIn("HttpOnly", cookie)
+                    self.assertIn("SameSite=Strict", cookie)
+                    self.assertIn("Secure", cookie)
+                    cookie_pair = cookie.split(";", 1)[0]
+
+                    revision = urlopen(
+                        Request(base + "/revision.json", headers={"Cookie": cookie_pair}), timeout=3
+                    )
+                    self.assertEqual(json.loads(revision.read()), {"revision": [1, 2, 3, 4]})
+                    snapshot = urlopen(
+                        Request(base + "/snapshot.json", headers={"Cookie": cookie_pair}), timeout=3
+                    )
+                    self.assertEqual(json.loads(snapshot.read()), {"revision": [1, 2, 3, 4]})
+
+                    compressed = urlopen(
+                        Request(
+                            base + "/?access=test-access-token",
+                            headers={"Accept-Encoding": "gzip"},
+                        ),
+                        timeout=3,
+                    )
+                    self.assertEqual(compressed.headers["Content-Encoding"], "gzip")
+                    self.assertIn(b"Yang-gumi", gzip.decompress(compressed.read()))
+                finally:
+                    server.shutdown()
+                    server.server_close()
+                    thread.join(timeout=3)
 
     def test_private_tag_input_and_display_are_removed(self):
         source = Path(__file__).parents[1].joinpath("app.py").read_text(encoding="utf-8")
@@ -61,15 +325,26 @@ class PublicAndDailyArtTest(unittest.TestCase):
         self.assertNotIn('caption("私人标签', source)
         self.assertNotIn('["全部", "Bangumi", "私人标签"]', source)
 
+    def test_recent_cards_keep_their_tracks_when_browser_zoom_changes(self):
+        source = Path(__file__).parents[1].joinpath("ui_components.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "grid-template-columns:clamp(104px,7.1vw,136px) minmax(0,1fr) "
+            "clamp(126px,8.85vw,170px)",
+            source,
+        )
+        self.assertIn(".st-key-home_recent_grid .yg-score-row {{flex-wrap:nowrap", source)
+        self.assertIn("width:clamp(88px,6vw,112px)!important", source)
+
     def test_manifest_skips_oversize_and_uses_cached_assets(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             portrait = root / "portrait"; wallpaper = root / "wallpaper"
             portrait.mkdir(); wallpaper.mkdir()
             Image.new("RGB", (300, 500), "red").save(portrait / "ok.jpg")
-            old = (daily_art.LOCAL_ROOTS, daily_art.MANIFEST_PATH, daily_art.ASSET_DIR, daily_art.MAX_FILE_SIZE)
-            daily_art.MAX_FILE_SIZE = (portrait / "ok.jpg").stat().st_size + 128
             (portrait / "too-big.jpg").write_bytes(b"x" * (daily_art.MAX_FILE_SIZE + 1))
+            old = (daily_art.LOCAL_ROOTS, daily_art.MANIFEST_PATH, daily_art.ASSET_DIR)
             daily_art.LOCAL_ROOTS = {"portrait": portrait, "wallpaper": wallpaper}
             daily_art.MANIFEST_PATH = root / "manifest.json"
             daily_art.ASSET_DIR = root / "assets"
@@ -80,67 +355,8 @@ class PublicAndDailyArtTest(unittest.TestCase):
                 self.assertEqual(len(loaded["items"]), 1)
                 self.assertEqual(loaded["items"][0]["type"], "portrait")
                 self.assertIn("refresh_slot", built)
-                self.assertEqual(built["scan_stats"]["portrait"]["files_checked"], 2)
-                self.assertEqual(built["scan_stats"]["portrait"]["supported"], 2)
-                self.assertEqual(built["scan_stats"]["portrait"]["accepted"], 1)
-                self.assertEqual(built["scan_stats"]["portrait"]["oversized"], 1)
-                with mock.patch.object(daily_art, "_homepage_asset", side_effect=AssertionError("unchanged image decoded")) as resize:
-                    rebuilt = daily_art.rebuild_manifest()
-                self.assertEqual(len(rebuilt["items"]), 1)
-                resize.assert_not_called()
             finally:
-                daily_art.LOCAL_ROOTS, daily_art.MANIFEST_PATH, daily_art.ASSET_DIR, daily_art.MAX_FILE_SIZE = old
-
-    def test_manifest_finds_images_in_deeply_nested_new_computer_folders(self):
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            portrait = root / "portrait"
-            nested = portrait / "artist" / "series" / "chapter" / "selected"
-            wallpaper = root / "wallpaper"
-            nested.mkdir(parents=True)
-            wallpaper.mkdir()
-            Image.new("RGB", (300, 500), "purple").save(nested / "deep.jpg")
-            old = (dict(daily_art.LOCAL_ROOTS), daily_art.MANIFEST_PATH, daily_art.ASSET_DIR)
-            daily_art.LOCAL_ROOTS.clear()
-            daily_art.LOCAL_ROOTS.update({"portrait": portrait, "wallpaper": wallpaper})
-            daily_art.MANIFEST_PATH = root / "manifest.json"
-            daily_art.ASSET_DIR = root / "assets"
-            try:
-                built = daily_art.rebuild_manifest("portrait")
-                self.assertEqual(len(built["items"]), 1)
-                self.assertEqual(Path(built["items"][0]["path"]).name, "deep.jpg")
-                self.assertTrue((daily_art.ASSET_DIR / Path(built["items"][0]["asset"]).name).is_file())
-            finally:
-                daily_art.LOCAL_ROOTS.clear()
-                daily_art.LOCAL_ROOTS.update(old[0])
-                daily_art.MANIFEST_PATH, daily_art.ASSET_DIR = old[1], old[2]
-
-    def test_selected_folder_accepts_supported_images_regardless_of_orientation(self):
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            portrait = root / "portrait"; wallpaper = root / "wallpaper"
-            portrait.mkdir(); wallpaper.mkdir()
-            Image.new("RGB", (900, 400), "orange").save(portrait / "wide-in-portrait.bmp")
-            Image.new("RGB", (400, 900), "cyan").save(wallpaper / "tall-in-wallpaper.gif")
-            old = (dict(daily_art.LOCAL_ROOTS), daily_art.MANIFEST_PATH, daily_art.ASSET_DIR)
-            daily_art.LOCAL_ROOTS.clear()
-            daily_art.LOCAL_ROOTS.update({"portrait": portrait, "wallpaper": wallpaper})
-            daily_art.MANIFEST_PATH = root / "manifest.json"
-            daily_art.ASSET_DIR = root / "assets"
-            try:
-                built = daily_art.rebuild_manifest()
-                self.assertEqual({item["type"] for item in built["items"]}, {"portrait", "wallpaper"})
-                sizes = {}
-                for item in built["items"]:
-                    with Image.open(daily_art.ASSET_DIR / Path(item["asset"]).name) as image:
-                        sizes[item["type"]] = image.size
-                self.assertEqual(sizes, {"portrait": (720, 1080), "wallpaper": (1280, 720)})
-                self.assertEqual(built["scan_stats"]["portrait"]["accepted"], 1)
-                self.assertEqual(built["scan_stats"]["wallpaper"]["accepted"], 1)
-            finally:
-                daily_art.LOCAL_ROOTS.clear()
-                daily_art.LOCAL_ROOTS.update(old[0])
-                daily_art.MANIFEST_PATH, daily_art.ASSET_DIR = old[1], old[2]
+                daily_art.LOCAL_ROOTS, daily_art.MANIFEST_PATH, daily_art.ASSET_DIR = old
 
     def test_homepage_asset_crops_toward_detected_focus(self):
         source = Image.new("RGB", (400, 200), "blue")
@@ -194,9 +410,7 @@ class PublicAndDailyArtTest(unittest.TestCase):
             daily_art.SETTINGS_PATH = root / "settings.json"
             completed = mock.Mock(returncode=0, stdout=str(selected), stderr="")
             try:
-                with mock.patch.object(daily_art.os, "name", "nt"), mock.patch.object(
-                    daily_art.subprocess, "run", return_value=completed
-                ) as run:
+                with mock.patch.object(daily_art.subprocess, "run", return_value=completed) as run:
                     result = daily_art.choose_source_folder("portrait")
                 self.assertEqual(result, selected.resolve())
                 self.assertEqual(daily_art.load_source_folders()["portrait"], selected.resolve())

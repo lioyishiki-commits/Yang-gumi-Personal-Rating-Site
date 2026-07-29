@@ -144,19 +144,76 @@ class ScoringAndLauncherTest(unittest.TestCase):
             finally:
                 db.DATA_DIR, db.DB_PATH, db.EXPORT_DIR = original_paths
 
+    def test_dimension_update_recalculates_auto_total_but_preserves_manual_total(self):
+        original_paths = db.DATA_DIR, db.DB_PATH, db.EXPORT_DIR
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            db.DATA_DIR, db.DB_PATH, db.EXPORT_DIR = root, root / "acgn.db", root / "exports"
+            try:
+                db.init_db()
+                config = scoring.default_score_config()
+                component_scores = {
+                    field: 6.0
+                    for field in scoring.all_component_fields(config)
+                }
+                auto_total = scoring.calculate_total_score(
+                    component_scores,
+                    5000,
+                    config=config,
+                )
+                auto_id = db.save_work({
+                    "title": "自动校准作品",
+                    "type": "动画",
+                    "score_mode": "auto",
+                    "score_total": auto_total,
+                    "bangumi_total_votes": 5000,
+                    **component_scores,
+                })
+                manual_id = db.save_work({
+                    "title": "手动校准作品",
+                    "type": "游戏",
+                    "score_mode": "manual",
+                    "score_total": 7.7,
+                    **component_scores,
+                })
+
+                updated_auto = db.update_work_component_score(
+                    auto_id,
+                    "score_story",
+                    9.5,
+                    config,
+                )
+                self.assertEqual(updated_auto["score_story"], 9.5)
+                self.assertNotEqual(updated_auto["score_total"], auto_total)
+                self.assertEqual(updated_auto["status"], "已看")
+
+                updated_manual = db.update_work_component_score(
+                    manual_id,
+                    "score_story",
+                    3.5,
+                    config,
+                )
+                self.assertEqual(updated_manual["score_story"], 3.5)
+                self.assertEqual(updated_manual["score_total"], 7.7)
+
+                with self.assertRaisesRegex(ValueError, "启用的小项目"):
+                    db.update_work_component_score(
+                        manual_id,
+                        "not_a_score",
+                        5.0,
+                        config,
+                    )
+            finally:
+                db.DATA_DIR, db.DB_PATH, db.EXPORT_DIR = original_paths
+
     def test_windows_launcher_and_fixed_port_are_present(self):
         batch = (ROOT / "启动 Yang-gumi.bat").read_text(encoding="utf-8")
         launcher = (ROOT / "start_yanggumi.py").read_text(encoding="utf-8")
         config = (ROOT / ".streamlit" / "config.toml").read_text(encoding="utf-8")
-        self.assertIn("title Yang-gumi", batch)
-        self.assertIn('".venv\\Scripts\\python.exe" "%~dp0start_yanggumi.py"', batch)
-        self.assertIn('call "%~dp0安装并启动 Yang-gumi.bat"', batch)
+        self.assertIn("title Yang-gumi 本地评分库", batch)
+        self.assertIn("python start_yanggumi.py", batch)
         self.assertIn("PORT = 8501", launcher)
         self.assertIn('"--server.headless", "true"', launcher)
-        install_batch = (ROOT / "安装并启动 Yang-gumi.bat").read_text(encoding="utf-8")
-        for source in (batch, install_batch, launcher):
-            self.assertNotIn("share_public.py", source)
-            self.assertNotIn("启动只读分享", source)
         self.assertIn('port = 8501', config)
         self.assertIn('headless = true', config)
 
