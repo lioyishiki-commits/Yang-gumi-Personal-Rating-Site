@@ -25,6 +25,7 @@ BACKGROUND_MODES = [
     "auto_poster_blur", "auto_top_rated_poster", "auto_recent_finished_poster",
 ]
 POSTER_WIDGET_MODES = ["hero_strip", "side_rail", "poster_wall", "floating_cards", "blurred_banner", "none"]
+SEARCH_CATEGORY_DEFAULTS = ("全部", "动画", "漫画", "轻小说", "游戏", "其他")
 
 
 def _page(background_mode: str, widget_mode: str, enabled: bool = True) -> dict[str, Any]:
@@ -49,6 +50,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "poster_source": "watched_anime", "poster_max_count": 24,
         "poster_refresh_mode": "stable", "poster_opacity": 0.18,
         "poster_blur": 1, "poster_brightness": 0.92, "content_glass_opacity": 0.86,
+        "default_search_category": "动画",
     },
     "home": _page("auto_poster_blur", "hero_strip"),
     "library": _page("auto_poster_collage", "side_rail"),
@@ -109,6 +111,24 @@ def load_settings() -> dict[str, Any]:
 
 def reset_settings() -> dict[str, Any]:
     return save_settings(DEFAULT_SETTINGS)
+
+
+def default_search_category(settings: dict[str, Any] | None = None) -> str:
+    """Return the durable default used by every Bangumi category picker."""
+    current = settings or load_settings()
+    value = str(current.get("global", {}).get("default_search_category") or "动画")
+    return value if value in SEARCH_CATEGORY_DEFAULTS else "动画"
+
+
+def save_default_search_category(category: str) -> str:
+    """Persist one validated Bangumi category without changing other UI settings."""
+    value = str(category or "").strip()
+    if value not in SEARCH_CATEGORY_DEFAULTS:
+        raise ValueError(f"不支持的搜索分类：{value or '空值'}")
+    settings = load_settings()
+    settings["global"]["default_search_category"] = value
+    save_settings(settings)
+    return value
 
 
 def save_uploaded_background(uploaded: Any, page_key: str) -> str:

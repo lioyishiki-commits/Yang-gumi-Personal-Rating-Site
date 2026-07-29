@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from streamlit.testing.v1 import AppTest
@@ -23,6 +24,11 @@ class InteractiveReadOnlyShareTest(unittest.TestCase):
             app = AppTest.from_file("app.py", default_timeout=30).run()
         self.assertEqual(list(app.exception), [])
         return app
+
+    def test_public_launcher_executes_the_shared_app_on_every_rerun(self):
+        launcher = Path("app_public.py").read_text(encoding="utf-8")
+        self.assertIn("exec(compile(", launcher)
+        self.assertNotIn("\nimport app", launcher)
 
     def test_readonly_navigation_exposes_only_the_six_approved_pages(self):
         app = self.open_readonly_app()
@@ -85,6 +91,7 @@ class InteractiveReadOnlyShareTest(unittest.TestCase):
         self.assertEqual(list(app.exception), [])
         select_labels = {widget.label for widget in app.selectbox}
         self.assertTrue({"评分小项目", "分项排序", "分项每页"}.issubset(select_labels))
+        self.assertNotIn("榜单", select_labels)
         self.assertNotIn("当前结果每页", select_labels)
         page_size = next(widget for widget in app.selectbox if widget.label == "分项每页")
         self.assertEqual(page_size.value, 24)
