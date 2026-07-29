@@ -213,6 +213,62 @@ if not READ_ONLY_MODE and not _running_under_streamlit_apptest():
     seasonal.start_midnight_refresh_scheduler()
 APP_SETTINGS = ui_cfg.load_settings()
 inject_css(APP_SETTINGS)
+DEFAULT_SEARCH_CATEGORY = ui_cfg.default_search_category(APP_SETTINGS)
+
+
+def _canonical_search_category(category: str) -> str:
+    """Map ranking labels to the shared durable search preference."""
+    return "轻小说" if category == "小说" else str(category)
+
+
+def _preferred_category_for(options: list[str] | tuple[str, ...]) -> str:
+    options = list(options)
+    preferred = "小说" if DEFAULT_SEARCH_CATEGORY == "轻小说" and "小说" in options else DEFAULT_SEARCH_CATEGORY
+    if preferred in options:
+        return preferred
+    return "动画" if "动画" in options else options[0]
+
+
+def _render_search_category_picker(
+    label: str,
+    options: list[str] | tuple[str, ...],
+    *,
+    key: str,
+    segmented: bool = False,
+    initial: str | None = None,
+) -> str:
+    """Render a category picker with a persistent default button on its right."""
+    options = list(options)
+    preferred = initial if initial in options else _preferred_category_for(options)
+    if key not in st.session_state or st.session_state.get(key) not in options:
+        st.session_state[key] = preferred
+    picker_col, pin_col = st.columns([6, 1.15], vertical_alignment="bottom", gap="small")
+    with picker_col:
+        if segmented:
+            selected = st.segmented_control(label, options, key=key) or preferred
+        else:
+            selected = st.radio(label, options, horizontal=True, key=key)
+    canonical = _canonical_search_category(selected)
+    with pin_col:
+        fixed = canonical == DEFAULT_SEARCH_CATEGORY
+        if READ_ONLY_MODE:
+            st.button(
+                "已固定" if fixed else "固定",
+                key=f"search_default_pin_readonly_{key}",
+                disabled=True,
+                use_container_width=True,
+                help="只读分享沿用主站保存的默认分类。",
+            )
+        elif st.button(
+            "已固定" if fixed else "固定",
+            key=f"search_default_pin_{key}",
+            use_container_width=True,
+            help="将当前分类设为默认；刷新或重新启动后仍然保留。",
+        ):
+            ui_cfg.save_default_search_category(canonical)
+            st.toast(f"已将“{canonical}”固定为默认搜索分类。")
+            st.rerun()
+    return selected
 
 
 @st.cache_resource(show_spinner=False)
@@ -1958,15 +2014,15 @@ def page_add() -> None:
         _readonly_notice()
         return
     header("add", "新增条目", "可以先从 Bangumi 选用公开条目数据，也可以完全手动记录。")
-    if "add_search_category" not in st.session_state:
-        st.session_state.add_search_category = "动画"
     with st.expander("Bangumi 检索与选用", expanded=not bool(st.session_state.get("new_draft"))):
         st.subheader("Bangumi 检索")
         query = st.text_input(
             "作品名", key="add_query", placeholder="输入中文、日文或英文名称后按 Enter",
             on_change=_search_add_bangumi,
         )
-        category = st.radio("搜索分类", SEARCH_CATEGORIES, horizontal=True, key="add_search_category")
+        category = _render_search_category_picker(
+            "搜索分类", SEARCH_CATEGORIES, key="add_search_category",
+        )
         st.button("搜索 Bangumi", type="primary", on_click=_search_add_bangumi, key="add_search_button", use_container_width=True)
         _render_search_notice("add_search")
         def choose(subject, normalized):
@@ -2146,9 +2202,12 @@ def _render_bangumi_rank_cards(
 
 def render_bangumi_ranking_browser() -> None:
     render_section_heading("Bangumi 评分排行榜", "PUBLIC RANKING", "仅日本 ACGN · 按公开评分从高到低")
-    cols = st.columns([1.5, 1, 1], vertical_alignment="bottom")
+    cols = st.columns([2.1, .72, .9], vertical_alignment="bottom")
     with cols[0]:
-        category = st.segmented_control("分类", list(bgm.RANKING_CATEGORY_LABELS), default="动画", key="bangumi_rank_category") or "动画"
+        category = _render_search_category_picker(
+            "分类", list(bgm.RANKING_CATEGORY_LABELS),
+            key="bangumi_rank_category", segmented=True,
+        )
     with cols[1]:
         page_size = int(st.selectbox("每页", [8, 12, 16, 24], index=3, key="bangumi_rank_page_size"))
     with cols[2]:
@@ -2248,17 +2307,17 @@ def page_match() -> None:
     query_hint_id = st.session_state.get("match_work_id")
     query_hint = db.get_work(query_hint_id) if query_hint_id else None
     if query_hint:
-        category = query_hint.get("type") if query_hint.get("type") in TYPES else "动画"
         query_key = f"match_query_{query_hint['id']}"
         category_key = f"match_search_category_{query_hint['id']}"
-        if category_key not in st.session_state:
-            st.session_state[category_key] = category
         st.text_input(
             "搜索关键词", value=query_hint.get("title") or "", key=query_key,
             placeholder="输入中文、日文或英文作品名后按 Enter",
             on_change=_search_match_bangumi, args=(query_hint,),
         )
-        selected_category = st.radio("搜索分类", SEARCH_CATEGORIES, horizontal=True, key=category_key)
+        selected_category = _render_search_category_picker(
+            "搜索分类", SEARCH_CATEGORIES, key=category_key,
+            initial=str(query_hint.get("type") or ""),
+        )
         st.button("搜索 Bangumi", type="primary", on_click=_search_match_bangumi, args=(query_hint,), key=f"match_search_button_{query_hint['id']}", use_container_width=True)
         _render_search_notice("match_search")
         render_subject_result_views(
@@ -2269,13 +2328,13 @@ def page_match() -> None:
     render_bangumi_ranking_browser()
     with st.expander("公开条目搜索", expanded=False):
         st.caption("只读查询 Bangumi 公开条目；需要评分时请使用排行榜卡片上的按钮写入本地。")
-        if "bangumi_public_category" not in st.session_state:
-            st.session_state.bangumi_public_category = "动画"
         query = st.text_input(
             "搜索关键词", key="bangumi_public_query",
             placeholder="输入中文、日文或英文作品名后按 Enter", on_change=_search_public_bangumi,
         )
-        category = st.radio("搜索分类", SEARCH_CATEGORIES, horizontal=True, key="bangumi_public_category")
+        category = _render_search_category_picker(
+            "搜索分类", SEARCH_CATEGORIES, key="bangumi_public_category",
+        )
         st.button("搜索 Bangumi", type="primary", on_click=_search_public_bangumi, key="bangumi_public_search_button", use_container_width=True)
         _render_search_notice("bangumi_public_search")
         render_subject_result_views(
@@ -2331,12 +2390,15 @@ def _render_compare_dimension_lab(
     plain_labels = {field: label for field, label, _ in dimensions}
     all_dimension_fields = [field for field, _, _ in dimensions]
 
-    st.markdown("### 分项评分校准台")
+    st.markdown(
+        '<div class="yg-compare-section-heading"><div><small>逐项看差异</small>'
+        '<strong>分项评分</strong></div><span>默认每页 24 部</span></div>',
+        unsafe_allow_html=True,
+    )
     st.caption(
-        "选择剧情等任一小项目统一升降序比较；主站可在每部作品右侧只改这一项。"
-        "自动综合评分会立即重算，手动总评保持不变。"
+        "选择一个评分项目统一排序；主站可直接修改该项，自动总评随即重算。"
         if not READ_ONLY_MODE else
-        "选择剧情等任一小项目统一升降序比较；只读分享展示相同分项，但不允许修改。"
+        "选择一个评分项目统一排序；只读分享展示同一结果，但不允许修改。"
     )
     controls = st.columns([1.5, 1, .75])
     dimension_field = controls[0].selectbox(
@@ -2701,23 +2763,43 @@ def page_category() -> None:
 
 
 def page_compare() -> None:
-    header("compare", "评分对比", "我的评分 − Bangumi 公共评分；差异本身也是一种口味画像。")
+    header("compare", "评分对比", "先看整体偏差，再用同一评分项目逐部比较。")
     all_works = hydrated_works()
     works=[w for w in all_works if w.get("bangumi_id") and w.get("bangumi_score") is not None]
     mine_avg=flt.average_non_null(works,"score_total"); public_avg=flt.average_non_null(works,"bangumi_score")
     diffs = [float(w["score_diff"]) for w in works if w.get("score_diff") is not None]
     votes = [int(w["bangumi_total_votes"]) for w in works if w.get("bangumi_total_votes") is not None]
-    c1,c2,c3,c4=st.columns(4)
-    c1.metric("已对比条目",len(works)); c2.metric("我的平均分",fmt_score(mine_avg)); c3.metric("Bangumi 平均分",fmt_score(public_avg)); c4.metric("平均差值",flt.format_diff(flt.average_non_null(works,"score_diff")))
-    c1,c2,c3,c4=st.columns(4)
-    c1.metric("我高于 Bangumi",sum(d > .5 for d in diffs)); c2.metric("我低于 Bangumi",sum(d < -.5 for d in diffs))
-    c3.metric("基本一致",sum(abs(d) <= .5 for d in diffs)); c4.metric("平均评分人数","—" if not votes else f"{sum(votes)//len(votes):,}")
-    board_options = ["我比 Bangumi 高最多", "我比 Bangumi 低最多", "我和 Bangumi 最一致", "Bangumi 高分但我个人无感", "Bangumi 一般但我很喜欢"]
-    c1,c2,c3,c4=st.columns([1.35, .8, .8, 1.25])
-    board_mode=c1.selectbox("榜单",["我的榜单"]+board_options,key="compare_board_mode")
-    type_filter=c2.selectbox("类型",["全部"]+TYPES,key="compare_type")
-    status_filter=c3.selectbox("状态",["全部"]+STATUSES,key="compare_status")
-    tag_filter=c4.multiselect("标签（任意匹配）",[t["name"] for t in tags_snapshot() if t.get("category") == "Bangumi"],key="compare_tags")
+    primary_stats = (
+        ("已对比", f"{len(works):,}"),
+        ("我的均分", fmt_score(mine_avg)),
+        ("Bangumi 均分", fmt_score(public_avg)),
+        ("平均差值", flt.format_diff(flt.average_non_null(works, "score_diff"))),
+    )
+    stat_html = "".join(
+        f'<div class="yg-compare-stat"><span>{html.escape(label)}</span>'
+        f'<strong>{html.escape(str(value))}</strong></div>'
+        for label, value in primary_stats
+    )
+    secondary_stats = (
+        ("偏高", sum(d > .5 for d in diffs)),
+        ("偏低", sum(d < -.5 for d in diffs)),
+        ("接近", sum(abs(d) <= .5 for d in diffs)),
+        ("平均评分人数", "—" if not votes else f"{sum(votes)//len(votes):,}"),
+    )
+    secondary_html = "".join(
+        f'<span><b>{html.escape(label)}</b> {html.escape(str(value))}</span>'
+        for label, value in secondary_stats
+    )
+    st.markdown(
+        f'<section class="yg-compare-overview"><div>{stat_html}</div>'
+        f'<footer>{secondary_html}</footer></section>',
+        unsafe_allow_html=True,
+    )
+    with st.expander("筛选对比范围", expanded=False):
+        c1,c2,c3=st.columns([.8, .8, 1.4])
+        type_filter=c1.selectbox("类型",["全部"]+TYPES,key="compare_type")
+        status_filter=c2.selectbox("状态",["全部"]+STATUSES,key="compare_status")
+        tag_filter=c3.multiselect("标签（任意匹配）",[t["name"] for t in tags_snapshot() if t.get("category") == "Bangumi"],key="compare_tags")
     _render_compare_dimension_lab(all_works, type_filter, status_filter, tag_filter)
 
 

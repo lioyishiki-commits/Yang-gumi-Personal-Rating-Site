@@ -1327,6 +1327,48 @@ def inject_css(settings: dict[str, Any] | None = None) -> None:
       [class*="st-key-cat_"][class*="_row_"] .stButton button,
       [class*="st-key-library_row_"] .stButton button,
       [class*="st-key-tag_works_"][class*="_row_"] .stButton button {{width:100%;height:44px;min-width:0;}}
+      [class*="st-key-search_default_pin_"] .stButton button {{
+        min-height:42px;padding:.45rem .65rem;border-color:#484b54;background:#202126;
+        color:#e7e7e9;font-size:13px;font-weight:800;white-space:nowrap;
+      }}
+      [class*="st-key-search_default_pin_"] .stButton button:disabled {{
+        border-color:rgba(214,90,122,.42);background:rgba(214,90,122,.13);
+        color:#e887a0;opacity:1;
+      }}
+      .yg-compare-overview {{
+        margin:.85rem 0 .7rem;border:1px solid #34363e;border-radius:14px;
+        background:#1a1b1f;overflow:hidden;
+      }}
+      .yg-compare-overview>div {{
+        display:grid;grid-template-columns:repeat(4,minmax(0,1fr));
+      }}
+      .yg-compare-stat {{
+        min-width:0;padding:.85rem 1rem;border-right:1px solid #303138;
+      }}
+      .yg-compare-stat:last-child {{border-right:0;}}
+      .yg-compare-stat span {{
+        display:block;margin-bottom:.18rem;color:#8f929b;font-size:12px;font-weight:700;
+        white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+      }}
+      .yg-compare-stat strong {{
+        display:block;color:#f2f2f4;font-size:22px;font-weight:850;line-height:1.2;
+        overflow-wrap:anywhere;
+      }}
+      .yg-compare-overview footer {{
+        display:flex;flex-wrap:wrap;gap:.55rem 1.3rem;padding:.58rem 1rem;
+        border-top:1px solid #303138;background:#17181b;color:#8f929b;font-size:12px;
+      }}
+      .yg-compare-overview footer b {{color:#c9cad0;font-weight:780;}}
+      .yg-compare-section-heading {{
+        display:flex;align-items:end;justify-content:space-between;gap:1rem;
+        margin:1.05rem 0 .2rem;padding-bottom:.55rem;border-bottom:1px solid #303138;
+      }}
+      .yg-compare-section-heading>div {{display:flex;align-items:baseline;gap:.75rem;min-width:0;}}
+      .yg-compare-section-heading small {{
+        color:#d65a7a;font-size:11px;font-weight:850;letter-spacing:.12em;
+      }}
+      .yg-compare-section-heading strong {{color:#f2f2f4;font-size:22px;line-height:1.2;}}
+      .yg-compare-section-heading>span {{color:#8f929b;font-size:12px;white-space:nowrap;}}
       [class*="st-key-compare_dimension_row_"]>div[data-testid="stVerticalBlockBorderWrapper"] {{
         position:relative;margin:.7rem 0;padding:.9rem 1rem!important;border:1px solid #34363e!important;
         border-radius:14px;background:linear-gradient(110deg,rgba(214,90,122,.085),rgba(28,29,33,.96) 19%,rgba(28,29,33,.96));
@@ -1408,6 +1450,11 @@ def inject_css(settings: dict[str, Any] | None = None) -> None:
         }}
       }}
       @media(max-width:620px) {{
+        .yg-compare-overview>div {{grid-template-columns:repeat(2,minmax(0,1fr));}}
+        .yg-compare-stat:nth-child(2) {{border-right:0;}}
+        .yg-compare-stat:nth-child(-n+2) {{border-bottom:1px solid #303138;}}
+        .yg-compare-section-heading {{align-items:start;}}
+        .yg-compare-section-heading>div {{align-items:start;flex-direction:column;gap:.2rem;}}
         [class*="st-key-compare_dimension_row_"] [data-testid="stColumn"]:has(.yg-dimension-rank),
         [class*="st-key-compare_dimension_row_"] [data-testid="stColumn"]:has(.yg-dimension-title),
         [class*="st-key-compare_dimension_row_"] [data-testid="stColumn"]:has([data-testid="stNumberInput"]) {{

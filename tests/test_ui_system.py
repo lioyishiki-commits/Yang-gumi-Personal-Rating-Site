@@ -49,6 +49,18 @@ class UiSystemTest(unittest.TestCase):
             self.assertEqual(loaded["home"]["background_mode"], "none")
             self.assertTrue(json.loads(path.read_text(encoding="utf-8"))["global"]["enable_motion"])
 
+    def test_default_search_category_is_validated_and_persists(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "ui_settings.json"
+            with patch.object(settings, "SETTINGS_PATH", path), patch.object(settings, "DATA_DIR", path.parent):
+                self.assertEqual(settings.default_search_category(), "动画")
+                self.assertEqual(settings.save_default_search_category("漫画"), "漫画")
+                self.assertEqual(settings.default_search_category(), "漫画")
+                saved = json.loads(path.read_text(encoding="utf-8"))
+                self.assertEqual(saved["global"]["default_search_category"], "漫画")
+                with self.assertRaises(ValueError):
+                    settings.save_default_search_category("真人电影")
+
     def test_local_upload_and_custom_url_render_safely(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             with patch.object(settings, "BACKGROUNDS_DIR", Path(temp_dir)):
@@ -81,6 +93,15 @@ class UiSystemTest(unittest.TestCase):
         css = markdown.call_args.args[0]
         self.assertIn("animation:none!important", css)
         self.assertIn("prefers-reduced-motion", css)
+
+    def test_compare_overview_and_pin_button_have_compact_responsive_styles(self) -> None:
+        config = copy.deepcopy(settings.DEFAULT_SETTINGS)
+        with patch.object(components.st, "markdown") as markdown:
+            components.inject_css(config)
+        css = markdown.call_args.args[0]
+        self.assertIn(".yg-compare-overview", css)
+        self.assertIn("grid-template-columns:repeat(4,minmax(0,1fr))", css)
+        self.assertIn('[class*="st-key-search_default_pin_"]', css)
 
     def test_top_fifty_posters_keep_original_color(self) -> None:
         config = copy.deepcopy(settings.DEFAULT_SETTINGS)
