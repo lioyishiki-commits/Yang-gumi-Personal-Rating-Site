@@ -103,6 +103,22 @@ class UiSystemTest(unittest.TestCase):
         self.assertIn("grid-template-columns:repeat(4,minmax(0,1fr))", css)
         self.assertIn('[class*="st-key-search_default_pin_"]', css)
 
+    def test_dimension_poster_and_rank_share_the_same_center_axis(self) -> None:
+        config = copy.deepcopy(settings.DEFAULT_SETTINGS)
+        with patch.object(components.st, "markdown") as markdown:
+            components.inject_css(config)
+        css = markdown.call_args.args[0]
+        frame_selector = (
+            '[class*="st-key-compare_dimension_row_"] '
+            '[data-testid="stFullScreenFrame"]'
+        )
+        frame_rule = next(rule for rule in css.split("}") if frame_selector in rule)
+        rank_rule = next(rule for rule in css.split("}") if ".yg-dimension-rank" in rule)
+        self.assertIn("display:grid!important", frame_rule)
+        self.assertIn("place-items:center!important", frame_rule)
+        self.assertIn("width:100%!important", frame_rule)
+        self.assertIn("margin:0 auto .42rem", rank_rule)
+
     def test_top_fifty_posters_keep_original_color(self) -> None:
         config = copy.deepcopy(settings.DEFAULT_SETTINGS)
         with patch.object(components.st, "markdown") as markdown:

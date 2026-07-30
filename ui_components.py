@@ -1379,6 +1379,9 @@ def inject_css(settings: dict[str, Any] | None = None) -> None:
       }}
       [class*="st-key-compare_dimension_row_"] [data-testid="stHorizontalBlock"] {{align-items:center;}}
       [class*="st-key-compare_dimension_row_"] [data-testid="stColumn"] {{min-width:0;}}
+      [class*="st-key-compare_dimension_row_"] [data-testid="stFullScreenFrame"] {{
+        display:grid!important;place-items:center!important;width:100%!important;
+      }}
       [class*="st-key-compare_dimension_row_"] [data-testid="stImage"] {{display:flex;justify-content:center;}}
       [class*="st-key-compare_dimension_row_"] [data-testid="stImage"] img {{
         display:block;width:96px!important;height:144px!important;max-width:100%;margin:0 auto;
