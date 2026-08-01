@@ -34,6 +34,24 @@ class FilteringTest(unittest.TestCase):
         self.assertTrue(flt.diff_direction_matches(0.5, "基本一致"))
         self.assertTrue(flt.diff_direction_matches(-0.5, "基本一致"))
 
+    def test_compare_bias_groups_are_mutually_exclusive(self):
+        cases = [
+            (0.51, "偏高"),
+            (-0.51, "偏低"),
+            (0.5, "接近"),
+            (-0.5, "接近"),
+            (0.0, "接近"),
+        ]
+        for value, expected in cases:
+            matches = [
+                option
+                for option in flt.COMPARE_BIAS_OPTIONS[1:]
+                if flt.compare_bias_matches(value, option)
+            ]
+            self.assertEqual(matches, [expected])
+        self.assertFalse(flt.compare_bias_matches(None, "偏高"))
+        self.assertTrue(flt.compare_bias_matches(None, "全部"))
+
     def test_missing_scores_do_not_enter_ranges_or_differences(self):
         self.assertFalse(flt.score_in_range(None, "8.5 到 9.0"))
         self.assertIsNone(flt.calculate_score_diff({"score_total": 8.7, "bangumi_score": None}))
