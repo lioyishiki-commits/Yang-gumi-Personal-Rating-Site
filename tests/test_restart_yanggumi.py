@@ -24,12 +24,12 @@ class RestartYangGumiTest(unittest.TestCase):
         with (
             patch.object(restart, "_healthy", side_effect=[True, False, False, True]),
             patch.object(restart, "_listener_pid", return_value=123),
-            patch.object(restart, "_stop_owned_site") as stop,
+            patch.object(restart, "stop_owned_site", return_value=123) as stop,
             patch.object(restart, "_launch_hidden", return_value=456) as launch,
         ):
             result = restart.restart_running_site(timeout=2)
         self.assertEqual(result, {"restarted": True, "old_pid": 123, "launcher_pid": 456})
-        stop.assert_called_once_with(123)
+        stop.assert_called_once_with(8501, timeout=2)
         launch.assert_called_once_with()
 
     def test_closed_site_is_not_started(self):

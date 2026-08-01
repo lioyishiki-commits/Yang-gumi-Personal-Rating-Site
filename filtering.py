@@ -11,6 +11,7 @@ DIFF_ABS_RANGES = [
     "2.0 到 2.5", "2.5 到 3.0", "3.0 以上",
 ]
 DIFF_DIRECTIONS = ["全部", "我高于 Bangumi", "我低于 Bangumi", "基本一致"]
+COMPARE_BIAS_OPTIONS = ["全部", "偏高", "偏低", "接近"]
 
 
 def get_score_ranges(include_all: bool = False) -> list[str]:
@@ -68,6 +69,22 @@ def diff_direction_matches(value: Any, direction: str) -> bool:
     if direction == "基本一致":
         return -0.5 <= diff <= 0.5
     return True
+
+
+def compare_bias_matches(value: Any, selected_bias: str) -> bool:
+    """Match the mutually exclusive score-bias groups used on the compare page."""
+    if selected_bias == "全部":
+        return True
+    if value is None or value == "":
+        return False
+    diff = float(value)
+    if selected_bias == "偏高":
+        return diff > 0.5
+    if selected_bias == "偏低":
+        return diff < -0.5
+    if selected_bias == "接近":
+        return -0.5 <= diff <= 0.5
+    return False
 
 
 def diff_abs_in_range(value: Any, selected_range: str) -> bool:

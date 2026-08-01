@@ -33,6 +33,14 @@ class PageSmokeTest(unittest.TestCase):
         self.assertIn("作品本体 · 剧情", dimension.options)
         page_size = next(widget for widget in app.selectbox if widget.label == "分项每页")
         self.assertEqual(page_size.value, 24)
+        bias_filter = next(
+            widget for widget in app.segmented_control if widget.label == "评分差筛选"
+        )
+        self.assertEqual(bias_filter.options[0], "全部")
+        self.assertTrue(bias_filter.options[1].startswith("偏高 "))
+        self.assertTrue(bias_filter.options[2].startswith("偏低 "))
+        self.assertTrue(bias_filter.options[3].startswith("接近 "))
+        self.assertEqual(bias_filter.value, "全部")
 
     def test_search_category_controls_include_the_durable_pin_action(self):
         app = self.open_page("新增条目")

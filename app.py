@@ -2379,6 +2379,7 @@ def _render_compare_dimension_lab(
     type_filter: str,
     status_filter: str,
     tag_filter: list[str],
+    bias_filter: str,
 ) -> None:
     config = scoring.load_score_config()
     dimensions = _active_score_dimensions(config)
@@ -2428,6 +2429,8 @@ def _render_compare_dimension_lab(
             continue
         if not flt.matches_any_tag(work, tag_filter):
             continue
+        if not flt.compare_bias_matches(work.get("score_diff"), bias_filter):
+            continue
         has_any_score = work.get("score_total") is not None or any(
             _work_score_value(work, field) is not None for field in all_dimension_fields
         )
@@ -2462,6 +2465,7 @@ def _render_compare_dimension_lab(
         type_filter,
         status_filter,
         tuple(tag_filter),
+        bias_filter,
         len(scoped),
     )
     if st.session_state.get("_compare_dimension_page_state") != signature:
@@ -2781,10 +2785,12 @@ def page_compare() -> None:
         f'<strong>{html.escape(str(value))}</strong></div>'
         for label, value in primary_stats
     )
+    bias_counts = {
+        "偏高": sum(d > .5 for d in diffs),
+        "偏低": sum(d < -.5 for d in diffs),
+        "接近": sum(abs(d) <= .5 for d in diffs),
+    }
     secondary_stats = (
-        ("偏高", sum(d > .5 for d in diffs)),
-        ("偏低", sum(d < -.5 for d in diffs)),
-        ("接近", sum(abs(d) <= .5 for d in diffs)),
         ("平均评分人数", "—" if not votes else f"{sum(votes)//len(votes):,}"),
     )
     secondary_html = "".join(
@@ -2796,12 +2802,21 @@ def page_compare() -> None:
         f'<footer>{secondary_html}</footer></section>',
         unsafe_allow_html=True,
     )
+    bias_filter = st.segmented_control(
+        "评分差筛选",
+        flt.COMPARE_BIAS_OPTIONS,
+        default="全部",
+        key="compare_bias_filter",
+        format_func=lambda option: (
+            option if option == "全部" else f"{option} {bias_counts[option]}"
+        ),
+    ) or "全部"
     with st.expander("筛选对比范围", expanded=False):
         c1,c2,c3=st.columns([.8, .8, 1.4])
         type_filter=c1.selectbox("类型",["全部"]+TYPES,key="compare_type")
         status_filter=c2.selectbox("状态",["全部"]+STATUSES,key="compare_status")
         tag_filter=c3.multiselect("标签（任意匹配）",[t["name"] for t in tags_snapshot() if t.get("category") == "Bangumi"],key="compare_tags")
-    _render_compare_dimension_lab(all_works, type_filter, status_filter, tag_filter)
+    _render_compare_dimension_lab(all_works, type_filter, status_filter, tag_filter, bias_filter)
 
 
 def page_tags() -> None:

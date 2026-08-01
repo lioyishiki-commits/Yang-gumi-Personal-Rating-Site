@@ -1,6 +1,7 @@
 """Safely restart only the Yang-gumi Streamlit instance owned by this install."""
 from __future__ import annotations
 
+import base64
 import os
 import re
 import subprocess
@@ -16,6 +17,7 @@ ROOT = Path(__file__).resolve().parent
 HOST = "127.0.0.1"
 PORT = 8501
 HEALTH_URL = f"http://{HOST}:{PORT}/_stcore/health"
+REPLACE_SIGNAL_PATH = ROOT / "data" / "yanggumi-replace.signal"
 
 
 class RestartError(RuntimeError):
@@ -28,22 +30,23 @@ def _hidden_flags() -> int:
     return int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
 
-def _healthy(timeout: float = 1.0) -> bool:
+def _healthy(timeout: float = 1.0, port: int = PORT) -> bool:
     try:
-        with urllib.request.urlopen(HEALTH_URL, timeout=timeout) as response:
+        health_url = f"http://{HOST}:{int(port)}/_stcore/health"
+        with urllib.request.urlopen(health_url, timeout=timeout) as response:
             return response.status == 200 and response.read(32).strip().lower() == b"ok"
     except (OSError, urllib.error.URLError):
         return False
 
 
-def _listener_pid() -> int | None:
+def _listener_pid(port: int = PORT) -> int | None:
     completed = subprocess.run(
         ["netstat", "-ano", "-p", "tcp"], capture_output=True, text=True,
         encoding="utf-8", errors="replace", creationflags=_hidden_flags(), check=False,
     )
     if completed.returncode != 0:
         raise RestartError("无法读取本机 8501 端口状态。")
-    endpoint = f"{HOST}:{PORT}"
+    endpoint = f"{HOST}:{int(port)}"
     for line in completed.stdout.splitlines():
         columns = line.split()
         if len(columns) >= 5 and columns[1] == endpoint and columns[3].upper() == "LISTENING":
@@ -57,7 +60,8 @@ def _listener_pid() -> int | None:
 def _process_command_line(pid: int) -> str:
     script = (
         f'$p = Get-CimInstance Win32_Process -Filter "ProcessId = {int(pid)}" '
-        '-ErrorAction SilentlyContinue; if ($p) { $p.CommandLine }'
+        '-ErrorAction SilentlyContinue; if ($p) { '
+        '[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$p.CommandLine)) }'
     )
     completed = subprocess.run(
         ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
@@ -66,7 +70,13 @@ def _process_command_line(pid: int) -> str:
     )
     if completed.returncode != 0:
         raise RestartError(f"无法确认 8501 端口进程（PID {pid}）的身份。")
-    return completed.stdout.strip()
+    encoded = completed.stdout.strip()
+    if not encoded:
+        return ""
+    try:
+        return base64.b64decode(encoded, validate=True).decode("utf-8")
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise RestartError(f"无法解析 8501 端口进程（PID {pid}）的身份。") from exc
 
 
 def _is_owned_streamlit(command_line: str) -> bool:
@@ -75,16 +85,48 @@ def _is_owned_streamlit(command_line: str) -> bool:
     return root in normalized and "streamlit" in normalized and "app.py" in normalized
 
 
+def mark_replacement(pid: int) -> None:
+    REPLACE_SIGNAL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    REPLACE_SIGNAL_PATH.write_text(str(int(pid)), encoding="ascii")
+
+
+def consume_replacement(pid: int) -> bool:
+    try:
+        requested = int(REPLACE_SIGNAL_PATH.read_text(encoding="ascii").strip())
+    except (OSError, ValueError):
+        return False
+    if requested != int(pid):
+        return False
+    REPLACE_SIGNAL_PATH.unlink(missing_ok=True)
+    return True
+
+
 def _stop_owned_site(pid: int) -> None:
     command_line = _process_command_line(pid)
     if not _is_owned_streamlit(command_line):
         raise RestartError("8501 端口不是由当前目录的 Yang-gumi 占用，已拒绝结束该进程。")
+    mark_replacement(pid)
     completed = subprocess.run(
         ["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, text=True,
         encoding="utf-8", errors="replace", creationflags=_hidden_flags(), check=False,
     )
     if completed.returncode != 0:
+        REPLACE_SIGNAL_PATH.unlink(missing_ok=True)
         raise RestartError(f"无法结束旧版 Yang-gumi 进程（PID {pid}）。")
+
+
+def stop_owned_site(port: int = PORT, timeout: float = 15.0) -> int | None:
+    """Stop only this installation's Streamlit listener and wait for release."""
+    pid = _listener_pid(port)
+    if pid is None:
+        return None
+    _stop_owned_site(pid)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _listener_pid(port) is None:
+            return pid
+        time.sleep(0.2)
+    raise RestartError(f"旧的 Yang-gumi 未在限定时间内释放端口 {port}。")
 
 
 def _launch_hidden() -> int:
@@ -113,15 +155,10 @@ def restart_running_site(timeout: float = 45.0) -> dict[str, Any]:
     """Restart a healthy owned site; never touch an unrelated listener or start a closed site."""
     if not _healthy():
         return {"restarted": False, "reason": "not_running"}
-    pid = _listener_pid()
+    pid = _listener_pid(PORT)
     if pid is None:
         raise RestartError("网站健康检查成功，但未找到 8501 端口监听进程。")
-    _stop_owned_site(pid)
-    stop_deadline = time.monotonic() + min(15.0, timeout)
-    while time.monotonic() < stop_deadline and _healthy(timeout=0.4):
-        time.sleep(0.2)
-    if _healthy(timeout=0.4):
-        raise RestartError("旧版 Yang-gumi 未在限定时间内停止。")
+    stop_owned_site(PORT, timeout=min(15.0, timeout))
     launcher_pid = _launch_hidden()
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
