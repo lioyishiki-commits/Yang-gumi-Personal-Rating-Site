@@ -1,4 +1,4 @@
-@echo off
+﻿@echo off
 chcp 65001 >nul
 title Yang-gumi 本地评分库
 cd /d "%~dp0"

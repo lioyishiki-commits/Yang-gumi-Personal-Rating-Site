@@ -3,6 +3,8 @@
 *.md text eol=lf
 *.toml text eol=lf
 *.sh text eol=lf
-*.bat text eol=crlf
+# GitHub source ZIP and raw downloads must already contain Windows CMD bytes.
+# Keep UTF-8 BOM + CRLF in each batch blob instead of relying on checkout filters.
+*.bat binary
 *.docx binary
 compat/streamlit-1.58.0/index.dkY5s53S.js binary

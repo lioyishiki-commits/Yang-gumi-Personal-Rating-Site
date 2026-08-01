@@ -450,7 +450,7 @@ def rollback_latest() -> int:
 
 def main() -> int:
     command = (sys.argv[1] if len(sys.argv) > 1 else "check").casefold()
-    restart_running = "--restart-running" in sys.argv[2:]
+    restart_running = command == "check" and "--no-restart-running" not in sys.argv[2:]
     try:
         if command == "rollback":
             return rollback_latest()
