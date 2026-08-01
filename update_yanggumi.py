@@ -323,7 +323,22 @@ def _write_state(version: str, head: str, level: str) -> None:
     }, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def check_and_update() -> int:
+def _restart_running_site_if_requested(requested: bool) -> None:
+    if not requested:
+        return
+    try:
+        from restart_yanggumi import RestartError, restart_running_site
+
+        result = restart_running_site()
+    except (ImportError, OSError, RestartError) as exc:
+        raise UpdateError(f"程序文件已更新，但自动重启网站失败：{exc}") from exc
+    if result.get("restarted"):
+        print("已自动重启正在运行的 Yang-gumi；原浏览器页面会重新连接新版本。")
+    else:
+        print("未检测到正在运行的 Yang-gumi，无需自动重启。")
+
+
+def check_and_update(*, restart_running: bool = False) -> int:
     current_version = _read_version()
     print(f"当前网站版本：{current_version}")
     print("正在检查 GitHub 仓库更新……")
@@ -341,7 +356,7 @@ def check_and_update() -> int:
         if str(state.get("commit") or "") != head or str(state.get("version") or "") != current_version:
             _write_state(current_version, head, "none")
         print(f"GitHub 仓库没有更新。当前已是最新版本 {current_version}。")
-        print("程序文件未修改；若网站仍显示升级前内容，请关闭并重新启动 Yang-gumi。")
+        _restart_running_site_if_requested(restart_running)
         print("本季新番缓存会在网站启动后自动检查算法版本并按需重新核对。")
         return 0
     state_version = str(state.get("version") or "")
@@ -407,7 +422,9 @@ def check_and_update() -> int:
         print("更新失败，已自动恢复更新前的程序文件；数据库和用户记录始终未被改动。")
         raise
     print(f"更新成功。当前网站版本：{target_version}")
-    print("请关闭并重新启动 Yang-gumi，使新版本完全生效；旧版季番缓存会自动重新核对。")
+    _restart_running_site_if_requested(restart_running)
+    if not restart_running:
+        print("请关闭并重新启动 Yang-gumi，使新版本完全生效；旧版季番缓存会自动重新核对。")
     return 0
 
 
@@ -433,10 +450,11 @@ def rollback_latest() -> int:
 
 def main() -> int:
     command = (sys.argv[1] if len(sys.argv) > 1 else "check").casefold()
+    restart_running = "--restart-running" in sys.argv[2:]
     try:
         if command == "rollback":
             return rollback_latest()
-        return check_and_update()
+        return check_and_update(restart_running=restart_running)
     except (UpdateError, OSError, ValueError, py_compile.PyCompileError) as exc:
         print(f"[错误] {exc}")
         return 1

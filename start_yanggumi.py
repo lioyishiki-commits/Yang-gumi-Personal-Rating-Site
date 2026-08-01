@@ -47,6 +47,7 @@ def port_is_open() -> bool:
 
 
 def main() -> int:
+    open_browser = "--no-browser" not in sys.argv[1:]
     log("启动器开始运行")
     print("=" * 58)
     print(" Yang-gumi 本地评分库")
@@ -72,7 +73,8 @@ def main() -> int:
     if streamlit_is_healthy():
         log("检测到 8501 上已有健康的 Streamlit 实例，直接打开浏览器")
         print("\n检测到 Yang-gumi 已在 8501 端口运行，直接打开浏览器。")
-        webbrowser.open(URL)
+        if open_browser:
+            webbrowser.open(URL)
         return 0
 
     if port_is_open():
@@ -107,7 +109,8 @@ def main() -> int:
         if streamlit_is_healthy():
             log(f"启动成功：{URL}，PID={process.pid}")
             print(f"\n启动成功，正在打开 {URL}", flush=True)
-            webbrowser.open(URL)
+            if open_browser:
+                webbrowser.open(URL)
             break
         time.sleep(0.5)
     else:
