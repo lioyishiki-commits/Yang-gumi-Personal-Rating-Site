@@ -1,4 +1,4 @@
-@echo off
+﻿@echo off
 chcp 65001 >nul
 title 安装并启动 Yang-gumi
 cd /d "%~dp0"
