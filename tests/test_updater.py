@@ -29,6 +29,14 @@ class UpdaterTest(unittest.TestCase):
         data = self.root / "data"
         data.mkdir()
         (data / "acgn.db").write_bytes(b"private-db")
+        (data / "daily_art_settings.json").write_bytes(b'{"portrait_dir":"synthetic/portrait-library"}')
+        (data / "image_manifest.json").write_bytes(b'{"images":["private.jpg"]}')
+        daily_art = self.root / "static" / "daily_art"
+        daily_art.mkdir(parents=True)
+        (daily_art / "private-beauty.webp").write_bytes(b"private-beauty-image")
+        covers = self.root / "covers"
+        covers.mkdir()
+        (covers / "favorite-anime.jpg").write_bytes(b"private-favorite-cover")
         self.patches = [
             patch.object(updater, "ROOT", self.root),
             patch.object(updater, "VERSION_FILE", self.root / "VERSION"),
@@ -192,11 +200,61 @@ class UpdaterTest(unittest.TestCase):
             "static/daily_art/today.jpg",
             "static/share_assets/private-cover.jpg",
             "anywhere/private.sqlite3",
+            "Data/daily_art_settings.json",
+            "STATIC/DAILY_ART/private-beauty.webp",
+            "Public_Data.json",
         )
         for path in protected:
             self.assertTrue(updater._protected(path), path)
         self.assertFalse(updater._protected("app.py"))
         self.assertFalse(updater._protected(".streamlit/config.toml"))
+
+    def test_real_update_preserves_database_favorite_and_daily_art_byte_for_byte(self):
+        private_files = {
+            "data/acgn.db": b"private-db",
+            "data/daily_art_settings.json": b'{"portrait_dir":"synthetic/portrait-library"}',
+            "data/image_manifest.json": b'{"images":["private.jpg"]}',
+            "static/daily_art/private-beauty.webp": b"private-beauty-image",
+            "covers/favorite-anime.jpg": b"private-favorite-cover",
+        }
+        new_app = b"VALUE = 'new-with-personal-guard'\n"
+        compare = {
+            "status": "ahead",
+            "commits": [{"commit": {"message": "fix: guard personal content"}}],
+            "files": [
+                {
+                    "filename": "app.py", "status": "modified",
+                    "sha": blob_sha(new_app), "changes": 1,
+                },
+                {"filename": "data/acgn.db", "status": "modified", "changes": 1},
+                {"filename": "data/daily_art_settings.json", "status": "modified", "changes": 1},
+                {"filename": "data/image_manifest.json", "status": "modified", "changes": 1},
+                {"filename": "static/daily_art/private-beauty.webp", "status": "removed", "changes": 1},
+                {"filename": "covers/favorite-anime.jpg", "status": "removed", "changes": 1},
+            ],
+        }
+        with (
+            patch.object(updater, "_tag_commit", return_value="base"),
+            patch.object(updater, "_head_commit", return_value="head"),
+            patch.object(updater, "_remote_version", return_value="1.0.1"),
+            patch.object(updater, "_request_json", return_value=compare),
+            patch.object(updater, "_download", return_value=new_app) as download,
+            patch.dict(os.environ, {"YANGGUMI_UPDATE_SKIP_PROMPT": "Y"}),
+        ):
+            self.assertEqual(updater.check_and_update(), 0)
+        download.assert_called_once()
+        self.assertEqual((self.root / "app.py").read_bytes(), new_app)
+        for relative, expected in private_files.items():
+            self.assertEqual((self.root / relative).read_bytes(), expected, relative)
+
+    def test_apply_refuses_protected_path_even_if_filter_is_bypassed(self):
+        staging = self.root / "download-staging"
+        protected = staging / "data" / "acgn.db"
+        protected.parent.mkdir(parents=True)
+        protected.write_bytes(b"malicious-remote-db")
+        with self.assertRaisesRegex(updater.UpdateError, "个人内容保护检查失败"):
+            updater._apply([{"filename": "data/acgn.db", "status": "modified"}], staging)
+        self.assertEqual((self.root / "data" / "acgn.db").read_bytes(), b"private-db")
 
     def test_semantic_version_classification(self):
         self.assertEqual(updater._classify({"commits": [{"commit": {"message": "fix: bug"}}], "files": []})[0], "patch")
