@@ -90,6 +90,39 @@ class UpdaterTest(unittest.TestCase):
         self.assertEqual(state["version"], "1.1.0")
         self.assertEqual(state["commit"], "v110-head")
 
+    def test_124_patch_delivers_cache_migration_without_touching_personal_data(self):
+        (self.root / "VERSION").write_text("1.2.4\n", encoding="utf-8")
+        (self.root / "seasonal_service.py").write_text("CACHE_REVISION = 'old'\n", encoding="utf-8")
+        new_seasonal = b"CACHE_REVISION = 'dual-source-tv-yuc-bgm-v2'\n"
+        new_updater = b"# updater with restart guidance\n"
+        compare = {
+            "status": "ahead",
+            "commits": [{"commit": {"message": "fix: rebuild old seasonal cache"}}],
+            "files": [
+                {
+                    "filename": "seasonal_service.py", "status": "modified",
+                    "sha": blob_sha(new_seasonal), "changes": 2,
+                },
+                {
+                    "filename": "update_yanggumi.py", "status": "modified",
+                    "sha": blob_sha(new_updater), "changes": 2,
+                },
+            ],
+        }
+        with (
+            patch.object(updater, "_tag_commit", return_value="v124-base"),
+            patch.object(updater, "_head_commit", return_value="v125-head"),
+            patch.object(updater, "_remote_version", return_value="1.2.5"),
+            patch.object(updater, "_request_json", return_value=compare),
+            patch.object(updater, "_download", side_effect=[new_seasonal, new_updater]),
+            patch.dict(os.environ, {"YANGGUMI_UPDATE_SKIP_PROMPT": "Y"}),
+        ):
+            self.assertEqual(updater.check_and_update(), 0)
+        self.assertEqual((self.root / "seasonal_service.py").read_bytes(), new_seasonal)
+        self.assertEqual((self.root / "update_yanggumi.py").read_bytes(), new_updater)
+        self.assertEqual((self.root / "VERSION").read_text(encoding="utf-8").strip(), "1.2.5")
+        self.assertEqual((self.root / "data" / "acgn.db").read_bytes(), b"private-db")
+
     def test_retired_state_commit_falls_back_to_matching_official_tag(self):
         new_app = b"VALUE = 'official-update'\n"
         updater.STATE_FILE.write_text(json.dumps({

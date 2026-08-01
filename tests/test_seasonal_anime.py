@@ -350,13 +350,27 @@ class SeasonalAnimeTest(unittest.TestCase):
 
     def test_daily_gate_refreshes_only_once_for_the_local_date(self):
         now = datetime(2026, 7, 2, 0, 0, 1)
-        with patch("seasonal_service.db.seasonal_cache_meta", return_value={"last_sync": "2026-07-02T00:00:00"}), patch(
+        manifest = {"seasons": {"2026-Q3": {"cache_revision": seasonal.SEASONAL_CACHE_REVISION}}}
+        with patch("seasonal_service._load_source_manifest", return_value=manifest), patch(
+            "seasonal_service.db.seasonal_cache_meta", return_value={"last_sync": "2026-07-02T00:00:00"}
+        ), patch(
             "seasonal_service.refresh_current_season"
         ) as refresh:
             changed, season, count = seasonal.refresh_current_season_if_due(now)
         self.assertFalse(changed)
         self.assertEqual((season["season_code"], count), ("Q3", 0))
         refresh.assert_not_called()
+
+    def test_daily_gate_rebuilds_same_day_cache_from_an_older_algorithm(self):
+        now = datetime(2026, 7, 2, 14, 53, 0)
+        expected = seasonal.current_season(now)
+        with patch("seasonal_service._load_source_manifest", return_value={"seasons": {}}), patch(
+            "seasonal_service.db.seasonal_cache_meta", return_value={"last_sync": "2026-07-02T00:00:00"}
+        ), patch("seasonal_service.refresh_current_season", return_value=(expected, 70)) as refresh:
+            changed, season, count = seasonal.refresh_current_season_if_due(now)
+        self.assertTrue(changed)
+        self.assertEqual((season["season_code"], count), ("Q3", 70))
+        refresh.assert_called_once_with(now)
 
     def test_startup_catchup_runs_in_a_background_thread(self):
         original_started = seasonal._scheduler_started
