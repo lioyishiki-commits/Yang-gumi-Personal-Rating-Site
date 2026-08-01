@@ -77,16 +77,62 @@ class SeasonalAnimeTest(unittest.TestCase):
         }
         self.assertFalse(seasonal.is_homepage_seasonal_anime(cached))
 
-    def test_homepage_rejects_episode_runtime_below_twelve_minutes(self):
+    def test_homepage_rejects_short_tv_and_non_tv(self):
         short = subject(105)
         short["date"] = "2026-07-05"
         short["infobox"] = [{"key": "每话时长", "value": "约 5 分钟"}]
         cached = {**seasonal._candidate(short), "season_year": 2026, "season_code": "Q3"}
         self.assertTrue(seasonal.is_short_episode_anime(cached))
         self.assertFalse(seasonal.is_homepage_seasonal_anime(cached))
-        short["infobox"][0]["value"] = "12分钟"
-        cached = {**seasonal._candidate(short), "season_year": 2026, "season_code": "Q3"}
-        self.assertFalse(seasonal.is_short_episode_anime(cached))
+        movie = {**short, "id": 106, "platform": "剧场版", "name_cn": "测试动画 剧场版"}
+        cached_movie = {**seasonal._candidate(movie), "season_year": 2026, "season_code": "Q3"}
+        self.assertFalse(seasonal.is_tv_seasonal_anime(cached_movie))
+        self.assertFalse(seasonal.is_homepage_seasonal_anime(cached_movie))
+
+    def test_bgm_calendar_parser_reads_subject_ids_and_weekdays(self):
+        page = """
+        <li class="week "><dl><dt class="Sun"><div><h3>星期日</h3></div></dt><dd class="Sun">
+        <ul class="coverList"><li style="background:url('//lain.bgm.tv/a.jpg')"><div class="info">
+        <p><a href="/subject/501" class="nav">日曜动画</a></p>
+        <p><a href="/subject/501" class="nav"><small><em>Sunday Anime</em></small></a></p>
+        </div></li></ul></dd></dl></li>
+        <li class="week Sat"><dl><dt class="Sat"><div><h3>星期六</h3></div></dt><dd class="Sat">
+        <ul class="coverList"><li style="background:url('https://lain.bgm.tv/b.jpg')"><div class="info">
+        <p><a href="/subject/502" class="nav">土曜动画</a></p>
+        <p><a href="/subject/502" class="nav"><small><em>Saturday Anime</em></small></a></p>
+        </div></li></ul></dd></dl></li>
+        """
+        rows = seasonal.parse_bgm_calendar_entries(page)
+        self.assertEqual([row["bangumi_id"] for row in rows], [501, 502])
+        self.assertEqual([row["broadcast_day"] for row in rows], [6, 5])
+        self.assertEqual(rows[0]["poster_url"], "https://lain.bgm.tv/a.jpg")
+
+    def test_calendar_resolution_uses_subject_id_and_rejects_movies(self):
+        tv = subject(701)
+        tv["date"] = "2026-07-04"
+        movie = {**subject(702), "platform": "剧场版", "date": "2026-08-01"}
+        entries = [
+            {"bangumi_id": 701, "title": "TV", "broadcast_day": 5, "broadcast_day_label": "周六",
+             "broadcast_time": "", "broadcast_sort": 8639, "poster_url": ""},
+            {"bangumi_id": 702, "title": "Movie", "broadcast_day": 5, "broadcast_day_label": "周六",
+             "broadcast_time": "", "broadcast_sort": 8639, "poster_url": ""},
+        ]
+        rows, failures = seasonal.resolve_bgm_calendar_entries(
+            entries, seasonal.current_season(datetime(2026, 7, 1)), {701: tv, 702: movie},
+        )
+        self.assertEqual([row["bangumi_id"] for row in rows], [701])
+        self.assertEqual(failures, [702])
+        raw = json.loads(rows[0]["raw_json"])
+        self.assertEqual(raw["_yanggumi_season_source"], "bgm_calendar")
+
+    def test_calendar_subject_ids_are_reused_for_yuc_aliases(self):
+        calendar = [{
+            "bangumi_id": 801, "title": "无职转生 第三季", "original_title": "無職転生Ⅲ",
+        }]
+        matches = seasonal.calendar_matches_for_titles(calendar, {
+            "无职转生 第3期": ["無職転生Ⅲ"], "另一部动画": ["Another Anime"],
+        })
+        self.assertEqual(matches, {"无职转生 第3期": 801})
 
     def test_kisssub_parser_keeps_only_titles_between_quarter_markers(self):
         page = """
@@ -167,6 +213,7 @@ class SeasonalAnimeTest(unittest.TestCase):
         self.assertIn("Re:从零开始的异世界生活 第4期 Part.2 夺还篇", rows[0]["aliases"])
         self.assertIn("Re:ゼロから始める異世界生活 4th season 奪還編", rows[0]["aliases"])
         self.assertEqual((rows[0]["broadcast_day"], rows[0]["broadcast_time"]), (2, "21:00"))
+        self.assertEqual(rows[0]["yuc_reference_count"], 2)
 
     def test_current_quarter_translation_difference_can_match_safely(self):
         translated = subject(335)
@@ -344,7 +391,7 @@ class SeasonalAnimeTest(unittest.TestCase):
         cached["date"] = "2026-07-01"
         db.upsert_seasonal_anime([seasonal._candidate(cached)], 2026, "Q3", "7月番")
         with patch("seasonal_service.fetch_seasonal_candidates", side_effect=RuntimeError("offline")), patch(
-            "seasonal_service.fetch_kisssub_season_titles", side_effect=RuntimeError("verification")
+            "seasonal_service.fetch_bgm_calendar_entries", side_effect=RuntimeError("verification")
         ), patch(
             "seasonal_service.fetch_yuc_season_entries", side_effect=RuntimeError("offline")
         ), patch("seasonal_service.bgm.get_subject", side_effect=RuntimeError("offline")), patch(
@@ -355,10 +402,12 @@ class SeasonalAnimeTest(unittest.TestCase):
         rows = db.list_seasonal_anime(2026, "Q3", include_unconfirmed=True)
         self.assertEqual([row["bangumi_id"] for row in rows], [808])
 
-    def test_refresh_with_yuc_schedule_hides_unscheduled_official_candidates(self):
+    def test_refresh_with_yuc_schedule_hides_unscheduled_official_and_calendar_candidates(self):
         season = seasonal.current_season(datetime(2026, 7, 2))
         official = subject(901)
         official["date"] = "2026-07-03"
+        calendar_only = subject(903)
+        calendar_only["date"] = "2026-07-04"
         scheduled = subject(902)
         scheduled["date"] = "2026-04-06"
         scheduled = seasonal._mark_season_subject(
@@ -368,6 +417,8 @@ class SeasonalAnimeTest(unittest.TestCase):
         )
         entry = {
             "titles": [], "matches": {"半年连载动画": 902}, "yuc_titles": ["半年连载动画"],
+            "yuc_reference_count": 1,
+            "calendar_entries": [{"bangumi_id": 903, "title": "日历额外动画"}],
             "yuc_broadcasts": {"半年连载动画": {
                 "day": 0, "day_label": "周一", "time": "23:00", "sort": 1020, "note": "(全24话)",
             }},
@@ -377,6 +428,9 @@ class SeasonalAnimeTest(unittest.TestCase):
         with patch("seasonal_service.fetch_seasonal_candidates", return_value=[seasonal._candidate(official)]), patch(
             "seasonal_service._season_source_entry", return_value=(payload, entry, "")
         ), patch("seasonal_service._update_yuc_source_entry", return_value=""), patch(
+            "seasonal_service.resolve_bgm_calendar_entries",
+            return_value=([seasonal._candidate(calendar_only)], []),
+        ), patch(
             "seasonal_service.match_kisssub_titles",
             return_value=([seasonal._candidate(scheduled)], {"半年连载动画": 902}, []),
         ), patch("seasonal_service.preload_seasonal_posters", return_value=0):
@@ -384,6 +438,34 @@ class SeasonalAnimeTest(unittest.TestCase):
         self.assertEqual((refreshed["season_code"], count), ("Q3", 1))
         rows = db.list_seasonal_anime(2026, "Q3", include_unconfirmed=True)
         self.assertEqual([row["bangumi_id"] for row in rows], [902])
+
+    def test_refresh_rejects_count_more_than_five_away_from_yuc_reference(self):
+        entry = {
+            "matches": {},
+            "yuc_titles": [f"季度动画 {index}" for index in range(10)],
+            "yuc_reference_count": 1,
+            "calendar_entries": [],
+            "yuc_aliases": {},
+            "yuc_broadcasts": {},
+        }
+        payload = {"version": 1, "seasons": {"2026-Q3": entry}}
+        seeded = []
+        matches = {}
+        for index, title in enumerate(entry["yuc_titles"], start=1000):
+            item = subject(index)
+            item["date"] = "2026-07-03"
+            seeded.append(seasonal._candidate(seasonal._mark_season_subject(item, title, "yuc")))
+            matches[title] = index
+        with patch("seasonal_service.fetch_seasonal_candidates", return_value=[]), patch(
+            "seasonal_service._season_source_entry", return_value=(payload, entry, "")
+        ), patch("seasonal_service._update_yuc_source_entry", return_value=""), patch(
+            "seasonal_service.resolve_bgm_calendar_entries", return_value=([], [])
+        ), patch(
+            "seasonal_service.match_kisssub_titles", return_value=(seeded, matches, [])
+        ), patch("seasonal_service.preload_seasonal_posters", return_value=0):
+            with self.assertRaisesRegex(RuntimeError, "超过允许的 5 部"):
+                seasonal.refresh_current_season(datetime(2026, 7, 2))
+        self.assertEqual(db.list_seasonal_anime(2026, "Q3", include_unconfirmed=True), [])
 
     def test_form_hides_watch_dates_but_keeps_release_date_and_year(self):
         app = AppTest.from_file("app.py", default_timeout=30).run()
