@@ -332,7 +332,8 @@ def check_and_update() -> int:
         if str(state.get("commit") or "") != head or str(state.get("version") or "") != current_version:
             _write_state(current_version, head, "none")
         print(f"GitHub 仓库没有更新。当前已是最新版本 {current_version}。")
-        print("网站和更新程序均未进行任何修改。")
+        print("程序文件未修改；若网站仍显示升级前内容，请关闭并重新启动 Yang-gumi。")
+        print("本季新番缓存会在网站启动后自动检查算法版本并按需重新核对。")
         return 0
     state_version = str(state.get("version") or "")
     base = str(state.get("commit") or "") if state_version == current_version else ""
@@ -397,7 +398,7 @@ def check_and_update() -> int:
         print("更新失败，已自动恢复更新前的程序文件；数据库和用户记录始终未被改动。")
         raise
     print(f"更新成功。当前网站版本：{target_version}")
-    print("请关闭并重新启动 Yang-gumi，使新版本完全生效。")
+    print("请关闭并重新启动 Yang-gumi，使新版本完全生效；旧版季番缓存会自动重新核对。")
     return 0
 
 

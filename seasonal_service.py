@@ -23,6 +23,7 @@ RATING_PRECISION_REFRESH_PATH = ROOT / "data" / "rating_precision_refresh.json"
 KISSSUB_SCHEDULE_URL = "http://www.kisssub.org/"
 BGM_CALENDAR_URL = "https://bgm.tv/calendar"
 YUC_SEASON_BASE_URL = "https://yuc.wiki"
+SEASONAL_CACHE_REVISION = "dual-source-tv-yuc-bgm-v2"
 KISSSUB_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Yang-gumi/1.0",
     "Accept-Language": "zh-CN,zh;q=0.9,ja;q=0.7",
@@ -1021,6 +1022,9 @@ def _refresh_current_season(value: date | datetime | None = None) -> tuple[dict[
     _save_source_manifest(source_payload)
     count = db.upsert_seasonal_anime(candidates, season["year"], season["season_code"], season["month_label"])
     preload_seasonal_posters(season["year"], season["season_code"], candidates)
+    source_entry["cache_revision"] = SEASONAL_CACHE_REVISION
+    source_entry["cache_revision_applied_at"] = datetime.now().isoformat(timespec="seconds")
+    _save_source_manifest(source_payload)
     db.mark_seasonal_sync(season["year"], season["season_code"], "success", "；".join(errors))
     return season, count
 
@@ -1036,6 +1040,10 @@ def refresh_current_season_if_due(value: date | datetime | None = None) -> tuple
     now = value or datetime.now()
     season = current_season(now)
     meta = db.seasonal_cache_meta(season["year"], season["season_code"])
+    source_entry = (_load_source_manifest().get("seasons") or {}).get(_season_source_key(season)) or {}
+    if str(source_entry.get("cache_revision") or "") != SEASONAL_CACHE_REVISION:
+        refreshed_season, count = refresh_current_season(now)
+        return True, refreshed_season, count
     last_sync = str((meta or {}).get("last_sync") or "")
     if last_sync:
         try:
