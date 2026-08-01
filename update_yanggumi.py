@@ -40,6 +40,9 @@ PROTECTED_EXACT = {
     ".yanggumi-update-state.json", ".streamlit/secrets.toml", "VERSION",
     "public_data.json", "ShiKiShare.exe", "tools/cloudflared.exe",
 }
+PRIVATE_SUFFIXES = (".db", ".db-wal", ".db-shm", ".sqlite", ".sqlite3", ".token")
+PROTECTED_PREFIXES_CASEFOLD = tuple(value.casefold() for value in PROTECTED_PREFIXES)
+PROTECTED_EXACT_CASEFOLD = frozenset(value.casefold() for value in PROTECTED_EXACT)
 REQUIRED_AFTER_UPDATE = ("app.py", "database.py", "启动 Yang-gumi.bat", "update_yanggumi.py")
 
 
@@ -79,12 +82,23 @@ def _safe_relative(value: str) -> str:
 def _protected(path: str) -> bool:
     normalized = _safe_relative(path)
     lowered = normalized.casefold()
-    private_suffixes = (".db", ".db-wal", ".db-shm", ".sqlite", ".sqlite3", ".token")
     return (
-        normalized in PROTECTED_EXACT
-        or normalized.startswith(PROTECTED_PREFIXES)
-        or lowered.endswith(private_suffixes)
+        lowered in PROTECTED_EXACT_CASEFOLD
+        or lowered.startswith(PROTECTED_PREFIXES_CASEFOLD)
+        or lowered.endswith(PRIVATE_SUFFIXES)
     )
+
+
+def _assert_program_only_paths(paths: list[str]) -> None:
+    """Fail closed if protected personal content reaches an update write stage."""
+    protected = []
+    for value in paths:
+        normalized = _safe_relative(value)
+        if _protected(normalized):
+            protected.append(normalized)
+    if protected:
+        joined = "、".join(sorted(set(protected)))
+        raise UpdateError(f"个人内容保护检查失败，更新计划包含受保护路径：{joined}")
 
 
 def _read_version() -> str:
@@ -206,6 +220,7 @@ def _git_blob_sha(content: bytes) -> str:
 
 
 def _backup(paths: list[str], old_version: str, new_version: str, base: str, head: str) -> Path:
+    _assert_program_only_paths(paths)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     backup = RESTORE_ROOT / f"{stamp}-v{old_version}-to-v{new_version}"
     files_root = backup / "files"
@@ -276,6 +291,12 @@ def _download_changes(files: list[dict[str, Any]], head: str, staging: Path) -> 
 
 
 def _apply(applicable: list[dict[str, Any]], staging: Path) -> list[Path]:
+    write_paths = []
+    for item in applicable:
+        write_paths.append(item["filename"])
+        if item.get("previous_filename"):
+            write_paths.append(item["previous_filename"])
+    _assert_program_only_paths(write_paths)
     changed_python = []
     for item in applicable:
         filename = item["filename"]
@@ -396,12 +417,14 @@ def check_and_update(*, restart_running: bool = False) -> int:
             applicable_paths.append(filename)
             if previous:
                 applicable_paths.append(_safe_relative(previous))
+    _assert_program_only_paths(applicable_paths)
     print(f"发现更新：{current_version}  →  {target_version}")
     print(f"版本判断：{level.upper()}（{reason}）")
     print(
         f"将更新 {len(set(applicable_paths))} 个程序文件；本地数据库、海报、背景、"
         "备份、导出和私人配置不会下载、删除或覆盖。"
     )
+    print("个人内容保护检查：通过（0 个个人内容文件进入更新计划）。")
     choice = os.environ.get("YANGGUMI_UPDATE_SKIP_PROMPT", "").strip().upper()
     if choice not in {"Y", "N"}:
         choice = input("是否更新？请输入 Y 或 N：").strip().upper()
