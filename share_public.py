@@ -56,6 +56,8 @@ PLAIN_TUNNEL_SUBDOMAIN_PATH = PLAIN_TUNNEL_STATE_DIR / "plain_tunnel_subdomain.t
 INSTANCE_LOCK_PATH = DATA_DIR / "remote_share.instance.lock"
 PREFERRED_PORT = 18632
 MAIN_APP_PORT = 8501
+FALLBACK_APP_PORT = 8502
+FALLBACK_APP_PORT_ATTEMPTS = 100
 PORT_ATTEMPTS = 20
 PORT = PREFERRED_PORT
 MAX_RECONNECTS = 3
@@ -70,7 +72,9 @@ STALE_TUNNEL_RECYCLE_PROVIDERS = {
     "PlainTunnel",
     "Wormhole",
     "Hostc",
+    "localhost.run",
 }
+SAME_PROVIDER_RECONNECT_PROVIDERS = {"PlainTunnel", "localhost.run"}
 # Providers rejected by live end-to-end verification:
 # - Hostc returns "Tunnel not ready" after initially rendering.
 # - Wormhole is blocked by Chrome Safe Browsing and strips the access query.
@@ -295,6 +299,10 @@ def find_available_port(preferred: int = PREFERRED_PORT, attempts: int = PORT_AT
         finally:
             probe.close()
     raise RuntimeError(f"端口 {preferred} 至 {preferred + attempts - 1} 均被占用，无法启动只读站。")
+
+
+def find_available_streamlit_port() -> int:
+    return find_available_port(FALLBACK_APP_PORT, FALLBACK_APP_PORT_ATTEMPTS)
 
 
 def wait_for_streamlit(timeout: float = 45.0, port: int | None = None) -> None:
@@ -941,6 +949,61 @@ def _terminate(process: subprocess.Popen[str] | None, timeout: float = 6.0) -> N
             process.kill()
 
 
+def _start_owned_streamlit(port: int, job: WindowsJob) -> subprocess.Popen[str]:
+    process = subprocess.Popen(
+        streamlit_command(port),
+        cwd=ROOT,
+        env=streamlit_environment(),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        creationflags=_child_flags(),
+    )
+    job.add(process)
+    wait_for_streamlit(port=port)
+    return process
+
+
+def _start_proxy_process(
+    port: int,
+    upstream_port: int,
+    job: WindowsJob,
+) -> subprocess.Popen[str]:
+    process = subprocess.Popen(
+        proxy_command(port, upstream_port),
+        cwd=ROOT,
+        env=streamlit_environment(),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        creationflags=_child_flags(),
+    )
+    job.add(process)
+    wait_for_proxy(port=port)
+    return process
+
+
+def _recover_local_upstream(
+    proxy: subprocess.Popen[str],
+    owned_streamlit: subprocess.Popen[str] | None,
+    job: WindowsJob,
+) -> tuple[subprocess.Popen[str], subprocess.Popen[str], int]:
+    """Move sharing away from an occupied but unhealthy owner port."""
+    replacement_port = find_available_streamlit_port()
+    replacement_streamlit = _start_owned_streamlit(replacement_port, job)
+    try:
+        _terminate(proxy)
+        replacement_proxy = _start_proxy_process(PORT, replacement_port, job)
+    except Exception:
+        _terminate(replacement_streamlit)
+        raise
+    if owned_streamlit is not None:
+        _terminate(owned_streamlit)
+    return replacement_proxy, replacement_streamlit, replacement_port
+
+
 def _pump_tunnel_output(pipe: IO[str], found: queue.Queue[tuple[str, str]]) -> None:
     try:
         for line in iter(pipe.readline, ""):
@@ -1344,10 +1407,10 @@ def _release_instance_lock(handle: IO[bytes] | None) -> None:
 def _update_public_health_status(healthy: bool, failures: int, final_url: str) -> int:
     """Track edge health without rotating a still-live ephemeral hostname.
 
-    localhost.run free hostnames cannot be reclaimed after reconnecting. A
-    transient HTTP/WebSocket probe failure must therefore never terminate a
-    live SSH process: keeping that process alive lets Streamlit's browser
-    client reconnect to the same URL when the edge recovers.
+    Short failures preserve the current link. Persistent failures are handled
+    by the provider-specific recycler so the stable locator can move visitors
+    away from an endpoint that is connected at SSH level but no longer serves
+    HTTP or WebSocket traffic.
     """
     if healthy:
         if failures >= PUBLIC_HEALTH_DEGRADED_AFTER:
@@ -1382,11 +1445,10 @@ def _update_public_health_status(healthy: bool, failures: int, final_url: str) -
 def _should_recycle_stale_tunnel(provider: str, failures: int) -> bool:
     """Recycle only relays whose hostname survives an in-process reconnect.
 
-    Plain Tunnel keeps its per-machine hostname across reconnects. XPOS,
-    Expose, Cloudflare, Pinggy and localhost.run allocate an ephemeral
-    hostname. Killing one of those after a brief edge hiccup makes the copied
-    visitor URL stale and leaves an already-rendered page with broken images.
-    Only reusable-hostname relays may be health-recycled here.
+    Plain Tunnel keeps its per-machine hostname across reconnects.
+    localhost.run may rotate, but copied visitor launchers follow the stable
+    locator, so a permanently dead edge must be replaced instead of being
+    retained forever.
     """
     return (
         provider in STALE_TUNNEL_RECYCLE_PROVIDERS
@@ -1452,30 +1514,27 @@ def run_share(managed: bool = False) -> None:
         job = WindowsJob()
         ensure_legacy_frontend_compatibility()
 
+        upstream_port = MAIN_APP_PORT
         if streamlit_server_ready(port=MAIN_APP_PORT):
             LOGGER.info("复用已经健康运行的主站；端口 %s", MAIN_APP_PORT)
             _write_status(message="已复用正在运行的主站，正在启动只读安全代理…")
         else:
-            if port_is_open(MAIN_APP_PORT):
-                raise RuntimeError(f"端口 {MAIN_APP_PORT} 已被非健康进程占用，无法启动 Yang-gumi 主站。")
-            _write_status(message="主站尚未运行，正在启动正常 Yang-gumi 主站…")
-            owned_streamlit = subprocess.Popen(
-                streamlit_command(MAIN_APP_PORT),
-                cwd=ROOT, env=streamlit_environment(), stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True,
-                creationflags=_child_flags(),
-            )
-            job.add(owned_streamlit)
-            wait_for_streamlit(port=MAIN_APP_PORT)
+            upstream_port = find_available_streamlit_port() if port_is_open(MAIN_APP_PORT) else MAIN_APP_PORT
+            if upstream_port == MAIN_APP_PORT:
+                _write_status(message="主站尚未运行，正在启动正常 Yang-gumi 主站…")
+            else:
+                _write_status(
+                    message=f"主站端口 {MAIN_APP_PORT} 无响应，正在使用独立只读上游 {upstream_port} 自动恢复…",
+                    local_state="recovering",
+                )
+                LOGGER.warning(
+                    "主站端口 %s 被非健康实例占用；分享改用独立上游 %s",
+                    MAIN_APP_PORT,
+                    upstream_port,
+                )
+            owned_streamlit = _start_owned_streamlit(upstream_port, job)
 
-        proxy = subprocess.Popen(
-            proxy_command(PORT, MAIN_APP_PORT),
-            cwd=ROOT, env=streamlit_environment(), stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True,
-            creationflags=_child_flags(),
-        )
-        job.add(proxy)
-        wait_for_proxy(port=PORT)
+        proxy = _start_proxy_process(PORT, upstream_port, job)
         _write_status(local_state="running", message="只读安全代理已启动，正在申请公网链接…")
 
         excluded_providers: set[str] = set()
@@ -1512,8 +1571,28 @@ def run_share(managed: bool = False) -> None:
             if tunnel.poll() is None:
                 if time.monotonic() - last_public_health_check >= PUBLIC_HEALTH_INTERVAL_SECONDS:
                     last_public_health_check = time.monotonic()
+                    if not streamlit_server_ready(port=upstream_port):
+                        LOGGER.warning("分享上游端口 %s 已失效；正在切换到独立上游", upstream_port)
+                        _write_status(
+                            state="recovering",
+                            message="本地主站无响应，正在自动切换只读上游…",
+                            local_state="recovering",
+                            last_error=f"本地上游端口 {upstream_port} 健康检查失败",
+                        )
+                        proxy, owned_streamlit, upstream_port = _recover_local_upstream(
+                            proxy,
+                            owned_streamlit,
+                            job,
+                        )
+                        public_health_failures = 0
+                        _write_status(
+                            state="running",
+                            message=f"本地只读上游已恢复（端口 {upstream_port}）",
+                            local_state="running",
+                            last_error="",
+                        )
                     healthy = (
-                        streamlit_server_ready(port=MAIN_APP_PORT)
+                        streamlit_server_ready(port=upstream_port)
                         and public_streamlit_server_ready(base_url)
                         and public_authorized_streamlit_ready(base_url, token)
                         and public_streamlit_websocket_ready(base_url, token=token)
@@ -1524,7 +1603,7 @@ def run_share(managed: bool = False) -> None:
                     if _should_recycle_stale_tunnel(tunnel_provider, public_health_failures):
                         # Plain Tunnel restarts on the same per-machine host.
                         # Do not exclude it and rotate visitors onto a new URL.
-                        if tunnel_provider != "PlainTunnel":
+                        if tunnel_provider not in SAME_PROVIDER_RECONNECT_PROVIDERS:
                             excluded_providers.add(tunnel_provider)
                         LOGGER.warning(
                             "Public endpoint failed %s consecutive probes; recycling the live %s process",

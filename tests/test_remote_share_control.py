@@ -304,18 +304,50 @@ class RemoteShareSecurityTests(unittest.TestCase):
         self.assertIn('"TCPKeepAlive=yes"', source)
         self.assertIn('"ServerAliveCountMax=12"', source)
 
-    def test_ephemeral_hostname_providers_are_never_health_recycled(self):
+    def test_stale_localhost_run_is_recycled_through_the_stable_locator(self):
         threshold = share_public.PUBLIC_HEALTH_RECYCLE_AFTER
         self.assertEqual(threshold, 3)
         self.assertTrue(share_public._should_recycle_stale_tunnel("Wormhole", threshold))
         self.assertTrue(share_public._should_recycle_stale_tunnel("PlainTunnel", threshold))
+        self.assertTrue(share_public._should_recycle_stale_tunnel("localhost.run", threshold))
         self.assertFalse(share_public._should_recycle_stale_tunnel("XPOS", threshold))
         self.assertFalse(share_public._should_recycle_stale_tunnel("Wormhole", threshold - 1))
         self.assertFalse(share_public._should_recycle_stale_tunnel("Expose", threshold))
         self.assertFalse(share_public._should_recycle_stale_tunnel("Cloudflare", threshold))
         self.assertFalse(share_public._should_recycle_stale_tunnel("Pinggy", threshold))
-        self.assertFalse(share_public._should_recycle_stale_tunnel("localhost.run", threshold))
         self.assertFalse(share_public._should_recycle_stale_tunnel("Runlocal", threshold))
+
+    def test_unhealthy_local_upstream_moves_proxy_to_a_fresh_streamlit_port(self):
+        old_proxy = mock.MagicMock()
+        replacement_streamlit = mock.MagicMock()
+        replacement_proxy = mock.MagicMock()
+        job = mock.MagicMock()
+        with mock.patch.object(
+            share_public, "find_available_streamlit_port", return_value=8505
+        ), mock.patch.object(
+            share_public, "_start_owned_streamlit", return_value=replacement_streamlit
+        ) as start_streamlit, mock.patch.object(
+            share_public, "_start_proxy_process", return_value=replacement_proxy
+        ) as start_proxy, mock.patch.object(share_public, "_terminate") as terminate:
+            proxy, streamlit, port = share_public._recover_local_upstream(
+                old_proxy,
+                None,
+                job,
+            )
+        self.assertIs(proxy, replacement_proxy)
+        self.assertIs(streamlit, replacement_streamlit)
+        self.assertEqual(port, 8505)
+        start_streamlit.assert_called_once_with(8505, job)
+        terminate.assert_called_once_with(old_proxy)
+        start_proxy.assert_called_once_with(share_public.PORT, 8505, job)
+
+    def test_share_monitor_recovers_local_upstream_before_public_probes(self):
+        source = Path(share_public.__file__).read_text(encoding="utf-8")
+        monitor_start = source.index("while not _stop_requested():")
+        monitor = source[monitor_start:source.index("tunnel = None", monitor_start)]
+        self.assertIn("_recover_local_upstream", monitor)
+        self.assertIn("streamlit_server_ready(port=upstream_port)", monitor)
+        self.assertNotIn("streamlit_server_ready(port=MAIN_APP_PORT)", monitor)
 
     def test_public_locator_is_persistent_and_verified(self):
         with tempfile.TemporaryDirectory() as temp:
