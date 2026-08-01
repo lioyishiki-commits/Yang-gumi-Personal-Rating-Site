@@ -49,6 +49,12 @@ class OpenSourceSafetyTest(unittest.TestCase):
     def test_open_source_default_cover_is_present(self) -> None:
         self.assertTrue((ROOT / "covers" / "default.svg").is_file())
 
+    def test_vm_installer_downloads_the_official_main_branch(self) -> None:
+        installer = (ROOT / "tools" / "Install-VM-From-GitHub.ps1").read_text(encoding="utf-8")
+        self.assertIn("$Branch = 'main'", installer)
+        self.assertIn("archive/refs/heads/$Branch.zip", installer)
+        self.assertNotIn("agent/fix-new-pc-deployment", installer)
+
 
 if __name__ == "__main__":
     unittest.main()
