@@ -292,7 +292,16 @@ def _apply(applicable: list[dict[str, Any]], staging: Path) -> list[Path]:
             continue
         source = staging / Path(*PurePosixPath(filename).parts)
         target.parent.mkdir(parents=True, exist_ok=True)
-        os.replace(source, target)
+        handle, temporary_name = tempfile.mkstemp(
+            prefix=f".{target.name}.", suffix=".yanggumi-update", dir=target.parent,
+        )
+        os.close(handle)
+        temporary_target = Path(temporary_name)
+        try:
+            shutil.copy2(source, temporary_target)
+            os.replace(temporary_target, target)
+        finally:
+            temporary_target.unlink(missing_ok=True)
         if target.suffix.lower() == ".py":
             changed_python.append(target)
     return changed_python

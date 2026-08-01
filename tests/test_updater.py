@@ -112,7 +112,7 @@ class UpdaterTest(unittest.TestCase):
         with (
             patch.object(updater, "_tag_commit", return_value="v124-base"),
             patch.object(updater, "_head_commit", return_value="v125-head"),
-            patch.object(updater, "_remote_version", return_value="1.2.5"),
+            patch.object(updater, "_remote_version", return_value="1.2.6"),
             patch.object(updater, "_request_json", return_value=compare),
             patch.object(updater, "_download", side_effect=[new_seasonal, new_updater]),
             patch.dict(os.environ, {"YANGGUMI_UPDATE_SKIP_PROMPT": "Y"}),
@@ -120,8 +120,21 @@ class UpdaterTest(unittest.TestCase):
             self.assertEqual(updater.check_and_update(), 0)
         self.assertEqual((self.root / "seasonal_service.py").read_bytes(), new_seasonal)
         self.assertEqual((self.root / "update_yanggumi.py").read_bytes(), new_updater)
-        self.assertEqual((self.root / "VERSION").read_text(encoding="utf-8").strip(), "1.2.5")
+        self.assertEqual((self.root / "VERSION").read_text(encoding="utf-8").strip(), "1.2.6")
         self.assertEqual((self.root / "data" / "acgn.db").read_bytes(), b"private-db")
+
+    def test_apply_replaces_from_a_temporary_file_on_the_destination_volume(self):
+        staging = self.root / "download-staging"
+        staging.mkdir()
+        (staging / "app.py").write_text("VALUE = 'new'\n", encoding="utf-8")
+        real_replace = os.replace
+        with patch.object(updater.os, "replace", wraps=real_replace) as replace:
+            changed = updater._apply([{"filename": "app.py", "status": "modified"}], staging)
+        replacement_source, replacement_target = map(Path, replace.call_args.args)
+        self.assertEqual(replacement_source.parent, self.root)
+        self.assertEqual(replacement_target, self.root / "app.py")
+        self.assertEqual((self.root / "app.py").read_text(encoding="utf-8"), "VALUE = 'new'\n")
+        self.assertEqual(changed, [self.root / "app.py"])
 
     def test_retired_state_commit_falls_back_to_matching_official_tag(self):
         new_app = b"VALUE = 'official-update'\n"
