@@ -20,7 +20,7 @@ if not defined PYTHON (
 echo ============================================================
 echo              Yang-gumi 手动检查更新
 echo ============================================================
-%PYTHON% "%~dp0update_yanggumi.py" check
+%PYTHON% "%~dp0update_yanggumi.py" check --restart-running
 set "RC=%ERRORLEVEL%"
 echo.
 if not "%RC%"=="0" echo 更新程序返回错误代码：%RC%

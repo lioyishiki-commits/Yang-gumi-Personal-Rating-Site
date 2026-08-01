@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import update_yanggumi as updater
+import restart_yanggumi
 
 
 def blob_sha(content: bytes) -> str:
@@ -89,6 +90,15 @@ class UpdaterTest(unittest.TestCase):
         state = json.loads(updater.STATE_FILE.read_text(encoding="utf-8"))
         self.assertEqual(state["version"], "1.1.0")
         self.assertEqual(state["commit"], "v110-head")
+
+    def test_latest_version_can_restart_the_running_site(self):
+        with (
+            patch.object(updater, "_head_commit", return_value="v100-head"),
+            patch.object(updater, "_remote_version", return_value="1.0.0"),
+            patch.object(restart_yanggumi, "restart_running_site", return_value={"restarted": True}) as restart,
+        ):
+            self.assertEqual(updater.check_and_update(restart_running=True), 0)
+        restart.assert_called_once_with()
 
     def test_124_patch_delivers_cache_migration_without_touching_personal_data(self):
         (self.root / "VERSION").write_text("1.2.4\n", encoding="utf-8")
