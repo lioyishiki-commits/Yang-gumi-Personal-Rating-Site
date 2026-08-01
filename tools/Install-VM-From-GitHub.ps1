@@ -2,7 +2,7 @@ param([switch]$CleanInstall)
 
 $ErrorActionPreference = 'Stop'
 
-$Branch = 'agent/fix-new-pc-deployment'
+$Branch = 'main'
 $Repository = 'lioyishiki-commits/Yang-gumi-Personal-Rating-Site'
 $Desktop = [Environment]::GetFolderPath('Desktop')
 $Pictures = [Environment]::GetFolderPath('MyPictures')
