@@ -25,6 +25,24 @@ class Upload:
 
 
 class UiSystemTest(unittest.TestCase):
+    def test_season_time_machine_keeps_all_animation_release_formats(self) -> None:
+        works = [
+            {
+                "id": index,
+                "title": subtype,
+                "type": "动画",
+                "subtype": subtype,
+                "release_date": "2026-07-10",
+                "score_total": 8.0,
+            }
+            for index, subtype in enumerate(("TV", "剧场版", "OVA", "WEB", "SP"), start=1)
+        ]
+        current_group = components.seasonal_anime_groups(works, today=date(2026, 8, 1))[0]
+        self.assertEqual(
+            {work["subtype"] for work in current_group["works"]},
+            {"TV", "剧场版", "OVA", "WEB", "SP"},
+        )
+
     def test_score_precision_is_consistent_across_every_work_card(self) -> None:
         self.assertEqual(components.fmt_work_score({"score_total": 8.2, "score_mode": "manual"}), "8.2")
         self.assertEqual(components.fmt_work_score({"score_total": 8.2, "score_mode": "auto"}), "8.20")

@@ -732,7 +732,7 @@ def render_seasonal_anime_panel(works: list[dict[str, Any]]) -> None:
     title_col, refresh_col = st.columns([5, 1], vertical_alignment="bottom")
     with title_col:
         render_section_heading("本季新番", "CURRENT SEASON", f'{season["year"]} · {season["month_label"]}')
-        st.caption("根据本地现实时间自动切换 · 官方 Bangumi 公开条目 · 主区仅显示日本动画")
+        st.caption("根据本地现实时间自动切换 · 每日交叉核对 Bangumi 每日放送与 YUC 当季表 · 仅显示日本非短篇 TV 动画")
     if refresh_col.button("刷新本季新番", use_container_width=True, key="refresh_seasonal_anime"):
         if _block_readonly_action():
             _readonly_notice()
@@ -746,7 +746,10 @@ def render_seasonal_anime_panel(works: list[dict[str, Any]]) -> None:
         st.rerun()
 
     season_rows = seasonal_snapshot(season["year"], season["season_code"], include_unconfirmed=True)
-    items = [item for item in season_rows if seasonal.is_homepage_seasonal_anime(item)]
+    items = [
+        item for item in season_rows
+        if seasonal.is_homepage_seasonal_anime(item) and seasonal.is_tv_seasonal_anime(item)
+    ]
     if not items:
         error = (meta or {}).get("error")
         render_empty_state("本季候选池暂时为空", error or "点击“刷新本季新番”即可从 Bangumi 获取公开条目数据。", "季")
@@ -765,8 +768,6 @@ def render_seasonal_anime_panel(works: list[dict[str, Any]]) -> None:
         ]).casefold()]
     if status_filter != "全部":
         items = [item for item in items if _season_status_label(item.get("effective_status"), item.get("local_score")) == status_filter]
-    if status_filter in {"未看", "想看", "在看", "抛弃"}:
-        items = [item for item in items if seasonal.is_tv_seasonal_anime(item)]
     def broadcast_order(item: dict[str, Any]) -> tuple[Any, ...]:
         subject = seasonal.candidate_subject(item)
         value = subject.get("_yanggumi_broadcast_sort")

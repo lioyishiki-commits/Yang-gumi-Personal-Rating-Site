@@ -21,6 +21,7 @@ SEASONAL_SOURCE_PATH = ROOT / "data" / "seasonal_title_sources.json"
 MISSING_COVER_REFRESH_PATH = ROOT / "data" / "missing_cover_refresh.json"
 RATING_PRECISION_REFRESH_PATH = ROOT / "data" / "rating_precision_refresh.json"
 KISSSUB_SCHEDULE_URL = "http://www.kisssub.org/"
+BGM_CALENDAR_URL = "https://bgm.tv/calendar"
 YUC_SEASON_BASE_URL = "https://yuc.wiki"
 KISSSUB_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Yang-gumi/1.0",
@@ -76,7 +77,7 @@ def is_displayable_japanese_seasonal_anime(item: dict[str, Any]) -> bool:
 
 
 def is_homepage_seasonal_anime(item: dict[str, Any], minimum_votes: int = 100) -> bool:
-    """Show confirmed KissSub season seeds immediately; other entries keep the vote gate."""
+    """Show only confirmed Japanese non-short TV anime; curated daily sources bypass the vote gate."""
     try:
         direct_rating = item.get("rating") if isinstance(item.get("rating"), dict) else {}
         cached_subject = candidate_subject(item) if item.get("raw_json") is not None or item.get("bangumi_id") else item
@@ -84,12 +85,13 @@ def is_homepage_seasonal_anime(item: dict[str, Any], minimum_votes: int = 100) -
     except (TypeError, ValueError):
         votes = 0
     subject = candidate_subject(item) if item.get("raw_json") is not None or item.get("bangumi_id") else item
-    is_curated_seed = subject.get("_yanggumi_season_source") in {"kisssub", "yuc"}
+    is_curated_seed = subject.get("_yanggumi_season_source") in {"bgm_calendar", "kisssub", "yuc"}
     return (
         (is_curated_seed or votes >= minimum_votes)
         and _cached_item_matches_season(item)
-        and not is_short_episode_anime(item)
+        and is_tv_seasonal_anime(item)
         and is_displayable_japanese_seasonal_anime(item)
+        and not is_short_episode_anime(item)
     )
 
 
@@ -253,6 +255,59 @@ def fetch_kisssub_season_titles(season: dict[str, Any]) -> list[str]:
     return titles
 
 
+def parse_bgm_calendar_entries(page_html: str) -> list[dict[str, Any]]:
+    """Extract Bangumi subject ids and weekday placement from the public calendar."""
+    weekday_map = {"Mon": 0, "Tue": 1, "Wed": 2, "Thu": 3, "Fri": 4, "Sat": 5, "Sun": 6}
+    day_labels = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
+    week_pattern = re.compile(
+        r'<li[^>]*class=["\']week[^"\']*["\'][^>]*>\s*<dl>\s*'
+        r'<dt[^>]*class=["\'](?P<day>Mon|Tue|Wed|Thu|Fri|Sat|Sun)["\'][^>]*>[\s\S]*?'
+        r'<ul[^>]*class=["\']coverList["\'][^>]*>(?P<body>[\s\S]*?)</ul>',
+        flags=re.I,
+    )
+    subject_pattern = re.compile(
+        r'<li[^>]*style=["\'][^"\']*url\(["\']?(?P<poster>[^"\')]+)["\']?\)[^"\']*["\'][^>]*>'
+        r'[\s\S]*?<a[^>]*href=["\']/subject/(?P<id>\d+)["\'][^>]*>(?P<title>[\s\S]*?)</a>'
+        r'[\s\S]*?<a[^>]*href=["\']/subject/(?P=id)["\'][^>]*>\s*<small>\s*<em>(?P<original>[\s\S]*?)</em>',
+        flags=re.I,
+    )
+    entries: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    for week in week_pattern.finditer(page_html):
+        day = weekday_map[week.group("day").title()]
+        for match in subject_pattern.finditer(week.group("body")):
+            subject_id = int(match.group("id"))
+            if subject_id in seen:
+                continue
+            seen.add(subject_id)
+            title = html_lib.unescape(re.sub(r"<[^>]+>", " ", match.group("title")))
+            original = html_lib.unescape(re.sub(r"<[^>]+>", " ", match.group("original")))
+            poster_url = html_lib.unescape(match.group("poster")).strip()
+            if poster_url.startswith("//"):
+                poster_url = "https:" + poster_url
+            entries.append({
+                "bangumi_id": subject_id,
+                "title": re.sub(r"\s+", " ", title).strip(),
+                "original_title": re.sub(r"\s+", " ", original).strip(),
+                "poster_url": poster_url,
+                "broadcast_day": day,
+                "broadcast_day_label": day_labels[day],
+                "broadcast_time": "",
+                "broadcast_sort": day * 1440 + 23 * 60 + 59,
+                "broadcast_note": "Bangumi 每日放送",
+            })
+    if not entries:
+        raise RuntimeError("Bangumi 每日放送没有解析到动画条目")
+    return entries
+
+
+def fetch_bgm_calendar_entries() -> list[dict[str, Any]]:
+    response = requests.get(BGM_CALENDAR_URL, headers=KISSSUB_HEADERS, timeout=(5, 30))
+    response.raise_for_status()
+    response.encoding = "utf-8"
+    return parse_bgm_calendar_entries(response.text)
+
+
 def yuc_season_url(season: dict[str, Any]) -> str:
     return f"{YUC_SEASON_BASE_URL}/{int(season['year'])}{int(season['start_month']):02d}/"
 
@@ -373,7 +428,7 @@ def fetch_yuc_season_entries(season: dict[str, Any]) -> list[dict[str, Any]]:
     details_by_poster = {entry["poster_url"]: entry for entry in details if entry.get("poster_url")}
     entries: list[dict[str, Any]] = []
     for schedule_entry in parse_yuc_schedule_entries(response.text):
-        if schedule_entry.get("is_endless"):
+        if schedule_entry.get("is_endless") or schedule_entry.get("is_short"):
             continue
         key = bgm.normalize_title(schedule_entry["title"])
         detail = details_by_key.get(key)
@@ -388,6 +443,7 @@ def fetch_yuc_season_entries(season: dict[str, Any]) -> list[dict[str, Any]]:
             merged["poster_url"] = detail.get("poster_url") or merged.get("poster_url") or ""
             aliases.extend([detail["title"], detail.get("original_title") or ""])
         merged["aliases"] = list(dict.fromkeys(value for value in aliases if value))
+        merged["yuc_reference_count"] = len(details)
         entries.append(merged)
     if not entries:
         raise RuntimeError("Yuc Wiki 当季页面没有解析到标题和海报")
@@ -401,11 +457,11 @@ def _season_source_entry(
     key = _season_source_key(season)
     entry = payload["seasons"].setdefault(key, {"titles": [], "matches": {}})
     error = ""
-    if try_live or not entry.get("titles"):
+    if try_live or not entry.get("calendar_entries"):
         entry["last_attempt"] = datetime.now().isoformat(timespec="seconds")
         try:
-            entry["titles"] = fetch_kisssub_season_titles(season)
-            entry["source"] = "kisssub"
+            entry["calendar_entries"] = fetch_bgm_calendar_entries()
+            entry["source"] = "bgm_calendar"
             entry["live_fetched_at"] = datetime.now().isoformat(timespec="seconds")
             entry["last_error"] = ""
         except Exception as exc:
@@ -424,6 +480,7 @@ def _update_yuc_source_entry(
         try:
             rows = fetch_yuc_season_entries(season)
             entry["yuc_titles"] = [row["title"] for row in rows]
+            entry["yuc_reference_count"] = int(rows[0].get("yuc_reference_count") or len(rows))
             entry["yuc_posters"] = {row["title"]: row["poster_url"] for row in rows}
             entry["yuc_short_titles"] = [row["title"] for row in rows if row.get("is_short")]
             entry["yuc_aliases"] = {
@@ -487,8 +544,10 @@ def preload_seasonal_posters(year: int, season_code: str, items: list[dict[str, 
             continue
         image_url = str(item.get("image_url") or item.get("bangumi_image_url") or "").strip()
         subject = candidate_subject(item) if item.get("raw_json") is not None else item
-        yuc_poster_url = str(subject.get("_yanggumi_yuc_poster") or "").strip()
-        image_urls = list(dict.fromkeys(url for url in (image_url, yuc_poster_url) if url))
+        source_poster_url = str(
+            subject.get("_yanggumi_source_poster") or subject.get("_yanggumi_yuc_poster") or ""
+        ).strip()
+        image_urls = list(dict.fromkeys(url for url in (image_url, source_poster_url) if url))
         if not bangumi_id or not image_urls or seasonal_poster_static_url(year, season_code, bangumi_id):
             continue
         pending.append((bangumi_id, image_urls))
@@ -558,7 +617,9 @@ def _mark_season_subject(
     if source_name == "kisssub":
         marked["_yanggumi_kisssub_title"] = source_title
     if poster_url:
-        marked["_yanggumi_yuc_poster"] = poster_url
+        marked["_yanggumi_source_poster"] = poster_url
+        if source_name == "yuc":
+            marked["_yanggumi_yuc_poster"] = poster_url
     if is_short:
         marked["_yanggumi_short_episode"] = True
     if broadcast:
@@ -568,6 +629,72 @@ def _mark_season_subject(
         marked["_yanggumi_broadcast_sort"] = int(broadcast["sort"])
         marked["_yanggumi_broadcast_note"] = str(broadcast.get("note") or "")
     return marked
+
+
+def resolve_bgm_calendar_entries(
+    entries: list[dict[str, Any]], season: dict[str, Any],
+    known_subjects: dict[int, dict[str, Any]] | None = None,
+) -> tuple[list[dict[str, Any]], list[int]]:
+    """Resolve calendar ids directly, keeping current/continuing confirmed Japanese TV anime."""
+    known_subjects = known_subjects or {}
+
+    def resolve(entry: dict[str, Any]) -> tuple[dict[str, Any] | None, int | None]:
+        try:
+            subject_id = int(entry.get("bangumi_id") or 0)
+            subject = known_subjects.get(subject_id) or bgm.get_subject(subject_id)
+            if not _subject_matches_season(subject, season, allow_missing=False, allow_continuing=True):
+                return None, subject_id
+            if not is_tv_seasonal_anime(subject) or not is_displayable_japanese_seasonal_anime(subject):
+                return None, subject_id
+            broadcast = {
+                "day": int(entry["broadcast_day"]),
+                "day_label": str(entry["broadcast_day_label"]),
+                "time": str(entry.get("broadcast_time") or ""),
+                "sort": int(entry.get("broadcast_sort") or 0),
+                "note": str(entry.get("broadcast_note") or ""),
+            }
+            marked = _mark_season_subject(
+                subject, str(entry.get("title") or entry.get("original_title") or subject_id),
+                "bgm_calendar", str(entry.get("poster_url") or ""), False, broadcast,
+            )
+            return _candidate(marked), None
+        except Exception:
+            return None, int(entry.get("bangumi_id") or 0) or None
+
+    candidates: list[dict[str, Any]] = []
+    failures: list[int] = []
+    if not entries:
+        return candidates, failures
+    with ThreadPoolExecutor(max_workers=min(8, len(entries))) as executor:
+        for candidate, failed_id in executor.map(resolve, entries):
+            if candidate is not None:
+                candidates.append(candidate)
+            elif failed_id is not None:
+                failures.append(failed_id)
+    return candidates, failures
+
+
+def calendar_matches_for_titles(
+    calendar_entries: list[dict[str, Any]], aliases: dict[str, list[str]],
+) -> dict[str, int]:
+    """Reuse exact calendar subject ids before falling back to Bangumi title search."""
+    calendar_by_title: dict[str, int] = {}
+    for entry in calendar_entries:
+        subject_id = int(entry.get("bangumi_id") or 0)
+        if not subject_id:
+            continue
+        for value in (entry.get("title"), entry.get("original_title")):
+            normalized = bgm.normalize_title(value)
+            if normalized:
+                calendar_by_title.setdefault(normalized, subject_id)
+    matches: dict[str, int] = {}
+    for title, values in aliases.items():
+        for value in [title, *values]:
+            subject_id = calendar_by_title.get(bgm.normalize_title(value))
+            if subject_id:
+                matches[title] = subject_id
+                break
+    return matches
 
 
 def _mark_kisssub_subject(subject: dict[str, Any], source_title: str) -> dict[str, Any]:
@@ -620,6 +747,7 @@ def match_kisssub_titles(
     short_titles: set[str] | None = None,
     broadcasts: dict[str, dict[str, Any]] | None = None,
     aliases: dict[str, list[str]] | None = None,
+    known_subjects: dict[int, dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, int], list[str]]:
     """Resolve curated season names to Bangumi subjects without failing the whole batch."""
     current_titles = set(titles)
@@ -632,6 +760,7 @@ def match_kisssub_titles(
     short_titles = short_titles or set()
     broadcasts = broadcasts or {}
     aliases = aliases or {}
+    known_subjects = known_subjects or {}
     candidates: list[dict[str, Any]] = []
     failures: list[str] = []
 
@@ -642,10 +771,12 @@ def match_kisssub_titles(
             subject_id = matches.get(title)
             subject: dict[str, Any] | None = None
             if subject_id:
-                try:
-                    subject = bgm.get_subject(subject_id)
-                except bgm.BangumiError:
-                    subject_id = None
+                subject = known_subjects.get(subject_id)
+                if subject is None:
+                    try:
+                        subject = bgm.get_subject(subject_id)
+                    except bgm.BangumiError:
+                        subject_id = None
                 if subject is not None and (
                     not _subject_matches_season(
                         subject, season, allow_missing=True, allow_continuing=allow_continuing,
@@ -667,10 +798,12 @@ def match_kisssub_titles(
                 if not selected:
                     return title, None, None
                 subject_id = int(selected["id"])
-                try:
-                    subject = bgm.get_subject(subject_id)
-                except bgm.BangumiError:
-                    subject = selected
+                subject = known_subjects.get(subject_id)
+                if subject is None:
+                    try:
+                        subject = bgm.get_subject(subject_id)
+                    except bgm.BangumiError:
+                        subject = selected
             item = _candidate(_mark_season_subject(
                 subject, title, source_names.get(title, "kisssub"), poster_urls.get(title, ""),
                 title in short_titles, broadcast,
@@ -750,24 +883,26 @@ def _refresh_current_season(value: date | datetime | None = None) -> tuple[dict[
 
     source_payload = _load_source_manifest()
     source_entry = (source_payload.get("seasons") or {}).get(_season_source_key(season)) or {}
-    quarter_open = now.date() == season_start_datetime(season).date()
     source_payload, source_entry, source_error = _season_source_entry(
-        season, try_live=quarter_open or not source_entry_live(source_entry, season), payload=source_payload,
+        season, try_live=True, payload=source_payload,
     )
     if source_error:
         errors.append(source_error)
     yuc_error = _update_yuc_source_entry(
-        season, source_payload, source_entry,
-        try_live=quarter_open or not bool(source_entry.get("yuc_live_fetched_at")),
+        season, source_payload, source_entry, try_live=True,
     )
     if yuc_error:
         errors.append(yuc_error)
-    kisssub_titles = [str(title).strip() for title in source_entry.get("titles", []) if str(title).strip()]
+    calendar_entries = [row for row in source_entry.get("calendar_entries", []) if isinstance(row, dict)]
+    known_subjects = {subject_id: candidate_subject(item) for subject_id, item in found.items()}
+    calendar_seeded, calendar_failures = resolve_bgm_calendar_entries(calendar_entries, season, known_subjects)
+    for item in calendar_seeded:
+        bangumi_id = int(item["bangumi_id"])
+        known_subjects[bangumi_id] = candidate_subject(item)
     yuc_titles = [str(title).strip() for title in source_entry.get("yuc_titles", []) if str(title).strip()]
-    titles = list(dict.fromkeys(kisssub_titles + yuc_titles))
+    titles = list(dict.fromkeys(yuc_titles))
     yuc_posters = {str(title): str(url) for title, url in (source_entry.get("yuc_posters") or {}).items() if str(url)}
-    source_names = {title: "kisssub" for title in kisssub_titles}
-    source_names.update({title: "yuc" for title in yuc_titles})
+    source_names = {title: "yuc" for title in yuc_titles}
     short_titles = {str(title) for title in source_entry.get("yuc_short_titles", []) if str(title)}
     broadcasts = {
         str(title): value for title, value in (source_entry.get("yuc_broadcasts") or {}).items()
@@ -778,10 +913,14 @@ def _refresh_current_season(value: date | datetime | None = None) -> tuple[dict[
         for title, values in (source_entry.get("yuc_aliases") or {}).items()
         if isinstance(values, list)
     }
+    known_matches = dict(source_entry.get("matches") or {})
+    for title, subject_id in calendar_matches_for_titles(calendar_entries, yuc_aliases).items():
+        known_matches.setdefault(title, subject_id)
     seeded, matches, failed_titles = match_kisssub_titles(
-        titles, season, source_entry.get("matches") or {}, source_names, yuc_posters, short_titles, broadcasts,
-        yuc_aliases,
+        titles, season, known_matches, source_names, yuc_posters, short_titles, broadcasts,
+        yuc_aliases, known_subjects,
     )
+    yuc_candidate_ids = {int(item["bangumi_id"]) for item in seeded}
     source_entry["matches"] = matches
     source_entry["last_match_attempt"] = datetime.now().isoformat(timespec="seconds")
     source_entry["pending_titles"] = failed_titles
@@ -792,12 +931,12 @@ def _refresh_current_season(value: date | datetime | None = None) -> tuple[dict[
         "expected_yuc_regular": len(regular_yuc_titles),
         "matched_yuc_regular": sum(1 for title in regular_yuc_titles if title in matches),
         "pending_yuc_regular": [title for title in regular_yuc_titles if title not in matches],
-        "kisssub_titles": len(kisssub_titles),
-        "matched_kisssub_titles": sum(1 for title in kisssub_titles if title in matches),
+        "bgm_calendar_entries": len(calendar_entries),
+        "matched_bgm_calendar_entries": len(calendar_seeded),
+        "pending_bgm_calendar_ids": calendar_failures,
         "bangumi_official_candidates": len(official_ids),
         "matched_union_subjects": len({int(subject_id) for subject_id in matches.values()}),
     }
-    _save_source_manifest(source_payload)
     for item in seeded:
         bangumi_id = int(item["bangumi_id"])
         found[bangumi_id] = item
@@ -809,7 +948,7 @@ def _refresh_current_season(value: date | datetime | None = None) -> tuple[dict[
             old_subject = candidate_subject(cached_item)
             refreshed = bgm.get_subject(bangumi_id)
             source_name = str(old_subject.get("_yanggumi_season_source") or "")
-            if source_name in {"kisssub", "yuc"}:
+            if source_name in {"bgm_calendar", "kisssub", "yuc"}:
                 broadcast = None
                 if old_subject.get("_yanggumi_broadcast_day") not in (None, ""):
                     broadcast = {
@@ -823,7 +962,7 @@ def _refresh_current_season(value: date | datetime | None = None) -> tuple[dict[
                     refreshed,
                     str(old_subject.get("_yanggumi_season_title") or old_subject.get("_yanggumi_kisssub_title") or ""),
                     source_name,
-                    str(old_subject.get("_yanggumi_yuc_poster") or ""),
+                    str(old_subject.get("_yanggumi_source_poster") or old_subject.get("_yanggumi_yuc_poster") or ""),
                     bool(old_subject.get("_yanggumi_short_episode")),
                     broadcast,
                 )
@@ -831,7 +970,11 @@ def _refresh_current_season(value: date | datetime | None = None) -> tuple[dict[
         except Exception:
             return bangumi_id, None
 
-    stale_items = [(bangumi_id, item) for bangumi_id, item in found.items() if bangumi_id not in fresh_ids]
+    candidate_scope_ids = yuc_candidate_ids if yuc_titles else set(found)
+    stale_items = [
+        (bangumi_id, item) for bangumi_id, item in found.items()
+        if bangumi_id in candidate_scope_ids and bangumi_id not in fresh_ids
+    ]
     if stale_items:
         with ThreadPoolExecutor(max_workers=min(8, len(stale_items))) as executor:
             for bangumi_id, refreshed_item in executor.map(refresh_cached, stale_items):
@@ -845,17 +988,37 @@ def _refresh_current_season(value: date | datetime | None = None) -> tuple[dict[
             return (0, int(broadcast_sort), item["bangumi_id"])
         return (1, item.get("air_date") or "9999-99-99", item["bangumi_id"])
 
-    eligible = found.values()
-    if broadcasts:
-        eligible = (
-            item for item in eligible
-            if str(candidate_subject(item).get("_yanggumi_broadcast_day")).isdigit()
-        )
-    candidates = sorted((item for item in eligible if not is_short_episode_anime(item)), key=candidate_order)
+    eligible = (
+        (found[bangumi_id] for bangumi_id in yuc_candidate_ids if bangumi_id in found)
+        if yuc_titles else found.values()
+    )
+    candidates = sorted((
+        item for item in eligible
+        if is_tv_seasonal_anime(item) and is_displayable_japanese_seasonal_anime(item)
+        and not is_short_episode_anime(item)
+    ), key=candidate_order)
     if not candidates:
         message = "；".join(errors) or "本季没有可保存的 Bangumi 条目"
         db.mark_seasonal_sync(season["year"], season["season_code"], "error", message)
         raise RuntimeError(message)
+    yuc_reference_count = int(source_entry.get("yuc_reference_count") or len(yuc_titles) or 0)
+    yuc_count_difference = abs(len(candidates) - yuc_reference_count) if yuc_reference_count else 0
+    source_entry["quarter_audit"].update({
+        "yuc_reference_count": yuc_reference_count,
+        "homepage_candidate_count": len(candidates),
+        "yuc_count_difference": yuc_count_difference,
+        "count_tolerance": 5,
+    })
+    if yuc_reference_count and yuc_count_difference > 5:
+        source_entry["quarter_audit"]["status"] = "error"
+        _save_source_manifest(source_payload)
+        message = (
+            f"本季新番数量 {len(candidates)} 与 YUC 主清单 {yuc_reference_count} "
+            f"相差 {yuc_count_difference} 部，超过允许的 5 部"
+        )
+        db.mark_seasonal_sync(season["year"], season["season_code"], "error", message)
+        raise RuntimeError(message)
+    _save_source_manifest(source_payload)
     count = db.upsert_seasonal_anime(candidates, season["year"], season["season_code"], season["month_label"])
     preload_seasonal_posters(season["year"], season["season_code"], candidates)
     db.mark_seasonal_sync(season["year"], season["season_code"], "success", "；".join(errors))
