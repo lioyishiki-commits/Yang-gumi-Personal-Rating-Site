@@ -1,3 +1,1 @@
-# UI assets
-
-Optional project-owned UI assets may be placed here. Runtime poster and gallery caches belong in sibling directories and are ignored by Git.
+此目录预留给 Yang-gumi 自有 UI 素材。当前视觉系统只使用 CSS、数据库内已记录作品的封面和项目自带的抽象占位 SVG。

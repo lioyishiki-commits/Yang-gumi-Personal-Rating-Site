@@ -319,10 +319,33 @@ def _bangumi_precision_snapshot() -> dict[str, dict[str, Any]]:
 
 
 def _with_precise_bangumi_score(item: dict[str, Any]) -> dict[str, Any]:
+    try:
+        rating = json.loads(item.get("bangumi_rating_json") or "{}")
+    except (TypeError, json.JSONDecodeError):
+        rating = {}
+    counts = rating.get("count") if isinstance(rating, dict) else None
+    if isinstance(counts, dict):
+        weighted = 0
+        total = 0
+        for raw_score, raw_count in counts.items():
+            try:
+                score = int(raw_score)
+                count = int(raw_count or 0)
+            except (TypeError, ValueError):
+                continue
+            if 1 <= score <= 10 and count >= 0:
+                weighted += score * count
+                total += count
+        if total > 0:
+            item["bangumi_score"] = round(weighted / total, 2)
+            item["bangumi_total_votes"] = total
+            item["precision_source"] = "bangumi-rating-distribution"
     subject_id = item.get("bangumi_id")
     precise = _bangumi_precision_snapshot().get(str(subject_id)) if subject_id not in (None, "") else None
     if precise:
         item["bangumi_score"] = round(float(precise["score"]), 2)
+        item["precision_source"] = "bangumi-rating-perspective"
+        item["precision_date"] = precise.get("date")
         if precise.get("votes") is not None:
             item["bangumi_total_votes"] = int(precise["votes"])
     mine, public = item.get("score_total"), item.get("bangumi_score")
@@ -502,9 +525,6 @@ def update_work_component_score(
     """Update one active score dimension without touching unrelated work fields."""
     import scoring
 
-    active_config = config or scoring.load_score_config()
-    if field not in scoring.all_component_fields(active_config):
-        raise ValueError("只能修改当前评分设置中启用的小项目。")
     try:
         clean_value = round(float(value), 1)
     except (TypeError, ValueError) as exc:
@@ -517,6 +537,9 @@ def update_work_component_score(
         if row is None:
             raise ValueError("找不到要修改的作品。")
         work = dict(row)
+        active_config = config or scoring.score_config_for_type(work.get("type"))
+        if field not in scoring.all_component_fields(active_config):
+            raise ValueError("只能修改该作品类型当前启用的小项目。")
         custom_scores: dict[str, float] = {}
         try:
             parsed = json.loads(work.get("custom_scores_json") or "{}")
@@ -638,7 +661,7 @@ def list_seasonal_anime(year: int, season_code: str, include_unconfirmed: bool =
                 WHEN '弃置' THEN 3 WHEN '已看' THEN 4 ELSE 2 END,
                 COALESCE(s.air_date,s.release_date,'9999-99-99'), s.bangumi_total_votes DESC
         """, (int(year), season_code)).fetchall()
-        return [dict(row) for row in rows]
+        return [_with_precise_bangumi_score(dict(row)) for row in rows]
 
 
 def get_seasonal_anime(cache_id: int) -> dict[str, Any] | None:
@@ -768,9 +791,8 @@ def _table_rows(name: str) -> list[dict[str, Any]]:
 
 def public_rows() -> list[dict[str, Any]]:
     import scoring
-    score_config = scoring.load_score_config()
 
-    def group_scores(work: dict[str, Any], group_key: str) -> dict[str, Any]:
+    def group_scores(work: dict[str, Any], group_key: str, score_config: dict[str, Any]) -> dict[str, Any]:
         custom = {}
         try:
             custom = json.loads(work.get("custom_scores_json") or "{}")
@@ -786,6 +808,7 @@ def public_rows() -> list[dict[str, Any]]:
               "short_review", "bangumi_image_url", "bangumi_summary", "created_at", "updated_at"]
     result = []
     for work in list_works():
+        score_config = scoring.score_config_for_type(work.get("type"))
         row = {key: work.get(key) for key in fields}
         row["score_diff"] = work.get("score_diff")
         row["cover_url"] = work.get("bangumi_image_url") or (
@@ -793,11 +816,11 @@ def public_rows() -> list[dict[str, Any]]:
         )
         row["bangumi_tags"] = [value for value in (work.get("tag_names") or "").split(" · ") if value]
         row["score_breakdown"] = {
-            "body": group_scores(work, "body"),
-            "feeling": group_scores(work, "feeling"),
-            "main": group_scores(work, "body"),
-            "bonus": group_scores(work, "feeling"),
-            "special": group_scores(work, "era"),
+            "body": group_scores(work, "body", score_config),
+            "feeling": group_scores(work, "feeling", score_config),
+            "main": group_scores(work, "body", score_config),
+            "bonus": group_scores(work, "feeling", score_config),
+            "special": group_scores(work, "era", score_config),
             "penalty": {"score_imbalance_penalty": work.get("score_imbalance_penalty")},
         }
         result.append(row)
@@ -864,11 +887,17 @@ def delete_selected_works(ids: Iterable[int]) -> int:
     return len(selected)
 
 
-def recalculate_auto_scores() -> int:
+def recalculate_auto_scores(work_type: str | None = None) -> int:
     import scoring
     updated = 0
     with connect() as conn:
-        rows = [dict(row) for row in conn.execute("SELECT * FROM works WHERE score_mode='auto'")]
+        category = "轻小说" if str(work_type or "").strip() == "小说" else str(work_type or "").strip()
+        if category:
+            rows = [dict(row) for row in conn.execute(
+                "SELECT * FROM works WHERE score_mode='auto' AND type=?", (category,)
+            )]
+        else:
+            rows = [dict(row) for row in conn.execute("SELECT * FROM works WHERE score_mode='auto'")]
         for row in rows:
             total = scoring.calculate_total_score(row, row.get("bangumi_total_votes"))
             if total is not None:

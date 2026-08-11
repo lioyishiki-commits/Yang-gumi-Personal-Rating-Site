@@ -36,7 +36,7 @@ import share_control as share_ctl
 from ui_components import (
     cover_for, diff_label, fmt_score, fmt_work_score, inject_css, ranking_list, ranking_showcase, render_empty_state,
     render_category_overview, render_page_shell, render_profile_summary,
-    render_score_distribution, render_section_heading,
+    render_page_outline, render_score_distribution, render_section_anchor, render_section_heading,
     render_season_time_windows, render_top_nav, work_grid_card, work_row,
 )
 
@@ -62,11 +62,11 @@ SCORE_LABELS = {
     "score_pacing": "节奏",
     "score_influence": "影响力", "score_originality": "开创性",
     "score_imbalance_penalty": "偏科惩罚",
-    "rewatch_value": "重看 / 重玩价值",
+    "rewatch_value": "重看价值",
 }
 COMPONENT_SCORE_FIELDS = scoring.COMPONENT_SCORE_FIELDS
 RANK_METRICS = {
-    "我的总评分": "score_total", "个人偏爱": "score_personal", "重看 / 重玩价值": "rewatch_value",
+    "我的总评分": "score_total", "个人偏爱": "score_personal", "重看价值": "rewatch_value", "重玩价值": "rewatch_value",
     "氛围感": "score_atmosphere", "情绪后劲": "score_aftertaste", "角色塑造": "score_character",
     "作画 / 摄影": "score_art", "演出": "score_direction", "音乐 / 配音": "score_music", "节奏": "score_pacing",
     "剧情": "score_story", "独特性": "score_uniqueness",
@@ -80,7 +80,7 @@ LIBRARY_SORTS = {
     "我的总评分从高到低": ("score_total", True), "我的总评分从低到高": ("score_total", False),
     "Bangumi 评分从高到低": ("bangumi_score", True), "Bangumi 评分从低到高": ("bangumi_score", False),
     "Bangumi 排名从高到低": ("bangumi_rank", False), "Bangumi 排名从低到高": ("bangumi_rank", True),
-    "个人偏爱从高到低": ("score_personal", True), "重看 / 重玩价值从高到低": ("rewatch_value", True),
+    "个人偏爱从高到低": ("score_personal", True), "重看价值从高到低": ("rewatch_value", True),
     "氛围感从高到低": ("score_atmosphere", True), "情绪后劲从高到低": ("score_aftertaste", True),
     "演出从高到低": ("score_direction", True),
     "评分差值从高到低": ("score_diff", True), "评分差值从低到高": ("score_diff", False),
@@ -102,8 +102,9 @@ READ_ONLY_MODE = _read_only_session_requested()
 SHARE_TOKEN = os.getenv("YANGGUMI_SHARE_TOKEN", "")
 SHARE_PAGE_SIZE_INDEX = 0 if READ_ONLY_MODE else 1
 READ_ONLY_NAV_PAGES = (
-    "首页", "条目库", "排行榜", "评分对比", "标签筛选", "评分设置",
+    "首页", "条目库", "Bangumi", "排行榜", "评分对比", "标签筛选", "评分设置", "数据管理",
 )
+ROUTABLE_PAGES = (*READ_ONLY_NAV_PAGES, "新增条目")
 
 
 @lru_cache(maxsize=1)
@@ -115,7 +116,7 @@ def _running_under_streamlit_apptest() -> bool:
 
 
 def _score_label(field: str, config: dict[str, Any] | None = None) -> str:
-    if str(field).startswith("custom_"):
+    if config is not None:
         return scoring.score_label(field, config)
     return SCORE_LABELS.get(field, scoring.score_label(field, config))
 
@@ -202,6 +203,170 @@ def render_page_safely(page_name: str) -> None:
 
 
 st.set_page_config(page_title="Yang-gumi", page_icon="🌸", layout="wide", initial_sidebar_state="collapsed")
+
+
+def _install_page_accessibility(page_name: str) -> None:
+    """Add document-level semantics that Streamlit cannot express directly."""
+    script = r"""
+    <script>
+    (() => {
+      const host = window.parent;
+      const doc = host.document;
+      const page = __PAGE__;
+      if (!doc || !doc.documentElement) return;
+
+      const resetNavigationState = () => {
+        doc.documentElement.classList.remove('yg-is-navigating');
+        const previousMain = doc.querySelector('[data-testid="stMain"], section.main, .main');
+        if (previousMain) previousMain.removeAttribute('aria-busy');
+        const previousStatus = doc.getElementById('yg-route-status');
+        if (previousStatus) previousStatus.textContent = '';
+      };
+      if (host.__ygNavigationResetTimer) {
+        host.clearTimeout(host.__ygNavigationResetTimer);
+        host.__ygNavigationResetTimer = null;
+      }
+      resetNavigationState();
+
+      const visibleText = (root, selectors) => {
+        for (const selector of selectors) {
+          const node = root && root.querySelector ? root.querySelector(selector) : null;
+          const value = (node && node.textContent || '').replace(/\s+/g, ' ').trim();
+          if (value) return value;
+        }
+        return '';
+      };
+      const enhance = () => {
+        doc.documentElement.lang = 'zh-CN';
+        doc.title = `Yang-gumi · ${page}`;
+        const main = doc.querySelector('[data-testid="stMain"], section.main, .main');
+        if (main) {
+          const pageTitle = doc.getElementById('yg-page-title') || main.querySelector('h1');
+          if (pageTitle) pageTitle.id = 'yg-page-title';
+          main.id = 'yg-main-content';
+          main.setAttribute('role', 'main');
+          if (pageTitle) main.setAttribute('aria-labelledby', 'yg-page-title');
+          else main.setAttribute('aria-label', `${page}主要内容`);
+          main.setAttribute('tabindex', '-1');
+        }
+
+        let skip = doc.getElementById('yg-skip-link');
+        if (!skip) {
+          skip = doc.createElement('a');
+          skip.id = 'yg-skip-link';
+          skip.className = 'yg-skip-link';
+          skip.href = '#yg-main-content';
+          skip.textContent = '跳到主要内容';
+          (doc.body || doc.documentElement).prepend(skip);
+        }
+        skip.onclick = () => {
+          const target = doc.getElementById('yg-main-content');
+          if (target) target.focus({preventScroll: true});
+        };
+
+        let routeStatus = doc.getElementById('yg-route-status');
+        if (!routeStatus) {
+          routeStatus = doc.createElement('div');
+          routeStatus.id = 'yg-route-status';
+          routeStatus.className = 'yg-route-status';
+          routeStatus.setAttribute('role', 'status');
+          routeStatus.setAttribute('aria-live', 'polite');
+          (doc.body || doc.documentElement).append(routeStatus);
+        }
+
+        const topNav = doc.querySelector('.st-key-top_navigation');
+        if (topNav) {
+          topNav.setAttribute('role', 'navigation');
+          topNav.setAttribute('aria-label', '主导航');
+        }
+        const sidebar = doc.querySelector('[data-testid="stSidebar"]');
+        if (sidebar) {
+          sidebar.setAttribute('role', 'navigation');
+          sidebar.setAttribute('aria-label', '移动端主导航');
+        }
+        doc.querySelectorAll('.st-key-top_navigation button,[data-testid="stSidebar"] button').forEach((button) => {
+          const label = (button.textContent || '').replace(/[✦▦＋◎♛≋#⚙]/g, '').trim();
+          if (label === page || (page === '标签作品' && label === '标签筛选') || (page === '条目详情' && label === '条目库')) {
+            button.setAttribute('aria-current', 'page');
+          } else {
+            button.removeAttribute('aria-current');
+          }
+        });
+
+        const symbolLabels = {
+          '♡': '标记为已看并进入评分',
+          '○': '标记为在看',
+          '×': '标记为弃置并进入评分'
+        };
+        doc.querySelectorAll('button').forEach((button) => {
+          const testid = button.getAttribute('data-testid') || '';
+          const numberBox = button.closest('[data-testid="stNumberInput"]');
+          const numberInput = numberBox && numberBox.querySelector('input');
+          const fieldName = numberInput && (numberInput.getAttribute('aria-label') || numberInput.getAttribute('name')) || '数值';
+          if (testid === 'stNumberInputStepDown') button.setAttribute('aria-label', `减少${fieldName}`);
+          if (testid === 'stNumberInputStepUp') button.setAttribute('aria-label', `增加${fieldName}`);
+          const text = (button.textContent || '').replace(/\s+/g, ' ').trim();
+          if (symbolLabels[text]) button.setAttribute('aria-label', symbolLabels[text]);
+          else if (!button.getAttribute('aria-label') && text) button.setAttribute('aria-label', text);
+        });
+
+        doc.querySelectorAll('img').forEach((image) => {
+          const current = (image.getAttribute('alt') || '').trim();
+          if (current && !/^\d+$/.test(current)) return;
+          const card = image.closest('[data-testid="stVerticalBlockBorderWrapper"],article,section,figure');
+          const title = visibleText(card, ['.yg-grid-title','.yg-work-title strong','.yg-bgm-rank-copy strong','h2','h3','figcaption']);
+          image.setAttribute('alt', title ? `${title}封面` : '作品封面');
+          image.setAttribute('decoding', 'async');
+        });
+        doc.querySelectorAll('[data-testid="stAlert"]').forEach((alert) => {
+          alert.setAttribute('role', 'status');
+          alert.setAttribute('aria-live', 'polite');
+        });
+        doc.querySelectorAll('input').forEach((input) => {
+          const label = (input.getAttribute('aria-label') || '').toLowerCase();
+          if (label.includes('搜索')) {
+            input.setAttribute('autocomplete', 'off');
+            input.setAttribute('spellcheck', 'false');
+          }
+        });
+      };
+
+      if (host.__ygA11yObserver) host.__ygA11yObserver.disconnect();
+      if (host.__ygNavigationHandler) doc.removeEventListener('click', host.__ygNavigationHandler, true);
+      host.__ygNavigationHandler = (event) => {
+        const button = event.target && event.target.closest && event.target.closest('.st-key-top_navigation button,[data-testid="stSidebar"] button');
+        if (!button || button.getAttribute('aria-current') === 'page') return;
+        const status = doc.getElementById('yg-route-status');
+        if (status) status.textContent = `正在打开${(button.textContent || '').trim()}…`;
+        const main = doc.getElementById('yg-main-content');
+        if (main) main.setAttribute('aria-busy', 'true');
+        doc.documentElement.classList.add('yg-is-navigating');
+        if (host.__ygNavigationResetTimer) host.clearTimeout(host.__ygNavigationResetTimer);
+        host.__ygNavigationResetTimer = host.setTimeout(resetNavigationState, 4500);
+      };
+      doc.addEventListener('click', host.__ygNavigationHandler, true);
+      host.__ygA11yObserver = new host.MutationObserver(enhance);
+      host.__ygA11yObserver.observe(doc.body || doc.documentElement, {childList: true, subtree: true});
+      enhance();
+    })();
+    </script>
+    """.replace("__PAGE__", json.dumps(page_name, ensure_ascii=False))
+    components.html(script, height=0, scrolling=False)
+if not READ_ONLY_MODE:
+    current_token = str(st.session_state.get("_bangumi_readonly_access_token") or "").strip()
+    current_account = st.session_state.get("_bangumi_readonly_account") or {}
+    if current_token and current_account.get("username"):
+        bgm.save_readonly_connection(current_token, current_account)
+    elif not current_token:
+        saved_token, saved_account = bgm.load_readonly_connection()
+        if saved_token and saved_account.get("username"):
+            st.session_state["_bangumi_readonly_access_token"] = saved_token
+            st.session_state["_bangumi_readonly_account"] = saved_account
+bgm.set_readonly_access_token(
+    "" if READ_ONLY_MODE else str(st.session_state.get("_bangumi_readonly_access_token") or "")
+)
+if not READ_ONLY_MODE:
+    bgm.start_r18_cover_sync_async_if_needed()
 db.set_read_only_mode(READ_ONLY_MODE)
 if READ_ONLY_MODE and SHARE_TOKEN:
     supplied_token = str(st.query_params.get("access") or "")
@@ -323,7 +488,11 @@ def _seasonal_data_revision(year: int, season_code: str) -> str:
             """,
             (int(year), str(season_code)),
         ).fetchone()
-    return f"{row[0]}:{row[1]}"
+    try:
+        precision_mtime = (ROOT / "data" / "bangumi_rating_precision.json").stat().st_mtime_ns
+    except OSError:
+        precision_mtime = 0
+    return f"{row[0]}:{row[1]}:{precision_mtime}"
 
 
 @st.cache_data(show_spinner=False)
@@ -410,9 +579,12 @@ def _handle_season_query_action() -> None:
     cache_id = st.query_params.get("season_id")
     if not action or not cache_id:
         return
+    current_view = str(st.query_params.get("view") or "").strip()
     st.query_params.clear()
     if READ_ONLY_MODE and SHARE_TOKEN:
         st.query_params["access"] = SHARE_TOKEN
+    if current_view in ROUTABLE_PAGES:
+        st.query_params["view"] = current_view
     if READ_ONLY_MODE and action != "open":
         st.session_state.readonly_notice_pending = True
         return
@@ -463,8 +635,11 @@ def hydrated_works() -> list[dict[str, Any]]:
     return works
 
 
-def sort_works(works: list[dict[str, Any]], metric: str, limit: int) -> list[dict[str, Any]]:
-    field = _rank_metric_map().get(metric, metric)
+def sort_works(
+    works: list[dict[str, Any]], metric: str, limit: int,
+    config: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    field = _rank_metric_map(config).get(metric, metric)
     if field == "special_public_high":
         candidates = [
             w for w in works
@@ -511,6 +686,9 @@ def _set_page_state(page_state_key: str, page: int) -> None:
 
 def _navigate_to(page: str) -> None:
     st.session_state.nav_page = page
+    if page in ROUTABLE_PAGES:
+        st.session_state._last_url_view = page
+        st.query_params["view"] = page
     st.session_state.pop("edit_id", None)
 
 
@@ -811,7 +989,11 @@ def render_seasonal_anime_panel(works: list[dict[str, Any]]) -> None:
             "id": int(item["id"]), "title": item.get("title") or "未命名动画",
             "original": item.get("original_title") or "", "image": poster_source,
             "remote_image": item.get("image_url") or "",
-            "score": fmt_score(item.get("bangumi_score")), "votes": int(item.get("bangumi_total_votes") or 0),
+            "score": (
+                fmt_score(item.get("bangumi_score"))
+                if str(item.get("precision_source") or "").startswith("bangumi-rating-") else "—"
+            ),
+            "votes": int(item.get("bangumi_total_votes") or 0),
             "date": item.get("air_date") or "日期未定", "status": status,
             "broadcast_day": int(broadcast_day) if str(broadcast_day).isdigit() else None,
             "broadcast_sort": int(subject.get("_yanggumi_broadcast_sort") or 999999),
@@ -1034,7 +1216,7 @@ def render_seasonal_anime_panel(works: list[dict[str, Any]]) -> None:
           const status = item.status || '';
           const state = item.state || '';
           const broadcast = item.broadcast_label ? `<div class="yg-season-broadcast">${{esc(item.broadcast_label)}}</div>` : '<div class="yg-season-broadcast">&nbsp;</div>';
-          return `<a class="yg-season-poster" data-season-go="1" data-image-token="${{attr(item.id)}}-${{attr(item.image || '')}}" data-fallback="${{attr(item.title)}}" href="${{attr(item.open_url)}}" target="_top" title="打开档案"></a>
+          return `<a class="yg-season-poster" data-season-go="1" data-image-token="${{attr(item.id)}}-${{attr(item.image || '')}}-${{attr(item.remote_image || '')}}" data-fallback="${{attr(item.title)}}" href="${{attr(item.open_url)}}" target="_top" title="打开档案"></a>
             <h3>${{esc(item.title)}}</h3><div class="yg-season-original">${{esc(item.original || '')}}</div>
             ${{broadcast}}<div class="yg-season-meta">BGM ${{esc(item.score)}} · ${{Number(item.votes || 0).toLocaleString()}} 人 · ${{esc(status)}}</div>
             <div class="yg-season-actions">
@@ -1047,30 +1229,67 @@ def render_seasonal_anime_panel(works: list[dict[str, Any]]) -> None:
           const poster = card.querySelector('.yg-season-poster');
           if (!poster) return;
           const token = poster.dataset.imageToken || '';
-          const imageUrl = item.image || '';
-          if (!imageUrl) {{
+          const sources = Array.from(new Set([item.image, item.remote_image].filter(Boolean)));
+          if (!sources.length) {{
             poster.classList.add('is-missing');
             return;
           }}
-          const record = preloadImage(imageUrl);
-          const showImage = () => {{
-            if (!poster.isConnected || poster.dataset.imageToken !== token) return;
-            const img = record.img.cloneNode(false);
-            img.alt = item.title || '';
-            poster.textContent = '';
-            poster.appendChild(img);
-            poster.classList.add('is-loaded');
+          let sourceIndex = 0;
+          let retryCount = 0;
+          const stillCurrent = () => poster.isConnected && poster.dataset.imageToken === token;
+          const retryUrl = (url) => {{
+            try {{
+              const next = new URL(url, window.location.href);
+              next.searchParams.set('_yg_retry', String(Date.now()));
+              return next.toString();
+            }} catch (error) {{
+              return url;
+            }}
           }};
-          if (record?.loaded) {{
-            showImage();
-          }} else if (record?.failed) {{
-            poster.classList.add('is-missing');
-          }} else if (record) {{
-            record.callbacks.push(() => {{
-              if (record.loaded) showImage();
-              if (record.failed && poster.isConnected && poster.dataset.imageToken === token) poster.classList.add('is-missing');
-            }});
-          }}
+          const startAttempt = () => {{
+            if (!stillCurrent()) return;
+            if (sourceIndex >= sources.length) {{
+              poster.replaceChildren();
+              poster.classList.remove('is-loaded');
+              poster.classList.add('is-missing');
+              return;
+            }}
+            const source = sources[sourceIndex];
+            const img = document.createElement('img');
+            img.alt = item.title || '';
+            img.loading = 'eager';
+            img.decoding = 'async';
+            img.referrerPolicy = 'no-referrer';
+            img.fetchPriority = sourceIndex === 0 ? 'high' : 'auto';
+            poster.classList.remove('is-loaded', 'is-missing');
+            poster.replaceChildren(img);
+            let settled = false;
+            let timeoutId = null;
+            const settle = (loaded) => {{
+              if (settled) return;
+              settled = true;
+              if (timeoutId) window.clearTimeout(timeoutId);
+              if (!stillCurrent()) return;
+              if (loaded && img.naturalWidth > 0) {{
+                poster.classList.add('is-loaded');
+                preloadImage(source);
+                return;
+              }}
+              if (retryCount < 1) {{
+                retryCount += 1;
+              }} else {{
+                sourceIndex += 1;
+                retryCount = 0;
+              }}
+              window.setTimeout(startAttempt, 180);
+            }};
+            img.onload = () => settle(true);
+            img.onerror = () => settle(false);
+            img.src = retryCount ? retryUrl(source) : source;
+            timeoutId = window.setTimeout(() => settle(false), 6000);
+            if (img.complete) window.queueMicrotask(() => settle(img.naturalWidth > 0));
+          }};
+          startAttempt();
         }}
         function animationClass(finalClass, delta) {{
           if (!delta || finalClass === 'pos_off') return '';
@@ -1542,9 +1761,9 @@ def page_home() -> None:
         render_empty_state("你的私人档案馆还空着", "从一部真正喜欢的作品开始：搜索 Bangumi、确认中文名，然后留下只属于你的评分。", "✦")
         c1,c2,c3 = st.columns([1,1,3])
         if c1.button("＋ 新增第一部作品", type="primary", use_container_width=True):
-            st.session_state.nav_page = "新增条目"; st.rerun()
+            _navigate_to("新增条目"); st.rerun()
         if c2.button("查看数据管理", use_container_width=True):
-            st.session_state.nav_page = "数据管理"; st.rerun()
+            _navigate_to("数据管理"); st.rerun()
         return
     render_section_heading("评分画像", "STATISTICS", "个人坐标")
     render_score_distribution(works)
@@ -1562,6 +1781,119 @@ def page_home() -> None:
             )
 
 
+def _render_period_average_panel(
+    works: list[dict[str, Any]], key_prefix: str,
+) -> list[dict[str, Any]]:
+    """Render time averages and return the same scope for downstream lists."""
+    enabled_key = f"{key_prefix}_period_average_enabled"
+    enabled = st.toggle(
+        "时间均分",
+        value=False,
+        key=enabled_key,
+        help="开启后可按单季度、单年或年代范围统计，并同步筛选下方条目。",
+    )
+    if not enabled:
+        return works
+
+    years = flt.release_year_options(works)
+    with st.container(key=f"{key_prefix}_period_average"):
+        st.markdown(
+            '<div class="yg-period-average-heading"><small>TIME AVERAGE</small>'
+            '<strong>时间均分</strong><span>统计并同步筛选下方条目</span></div>',
+            unsafe_allow_html=True,
+        )
+        if not years:
+            st.caption("当前条目没有可识别的发行年份，暂时无法计算时间均分。")
+            return []
+
+        mode_key = f"{key_prefix}_period_mode"
+        if st.session_state.get(mode_key) not in (None, *flt.PERIOD_AVERAGE_MODES):
+            st.session_state.pop(mode_key, None)
+        mode_col, period_col = st.columns([0.72, 1.28], gap="large", vertical_alignment="bottom")
+        with mode_col:
+            mode = st.segmented_control(
+                "统计范围", flt.PERIOD_AVERAGE_MODES, default="单季度", key=mode_key,
+            ) or "单季度"
+        selected_year: int | None = None
+        selected_quarter: int | None = None
+        selected_start_year: int | None = None
+        selected_end_year: int | None = None
+        year_key = f"{key_prefix}_period_year"
+        if st.session_state.get(year_key) not in (None, *years):
+            st.session_state.pop(year_key, None)
+
+        with period_col:
+            if mode == "单季度":
+                year_col, quarter_col = st.columns(2)
+                selected_year = int(year_col.selectbox("年份", years, key=year_key))
+                quarter_options = flt.PERIOD_QUARTERS
+                present_quarters = sorted({
+                    quarter for item in works
+                    if flt.derive_year_quarter(item)[0] == selected_year
+                    and (quarter := flt.derive_year_quarter(item)[1]) is not None
+                }, reverse=True)
+                default_quarter = present_quarters[0] if present_quarters else quarter_options[0]
+                quarter_key = f"{key_prefix}_period_quarter"
+                if st.session_state.get(quarter_key) not in (None, *quarter_options):
+                    st.session_state.pop(quarter_key, None)
+                selected_quarter = int(quarter_col.selectbox(
+                    "季度", quarter_options,
+                    index=quarter_options.index(default_quarter), key=quarter_key,
+                    format_func=lambda value: f"Q{value}",
+                ))
+            elif mode == "单年":
+                selected_year = int(st.selectbox("年份", years, key=year_key))
+            else:
+                start_key = f"{key_prefix}_period_start_year"
+                end_key = f"{key_prefix}_period_end_year"
+                for range_key in (start_key, end_key):
+                    if st.session_state.get(range_key) not in (None, *years):
+                        st.session_state.pop(range_key, None)
+                range_cols = st.columns(2)
+                selected_start_year = int(range_cols[0].selectbox(
+                    "起始年份", years, index=min(2, len(years) - 1), key=start_key,
+                ))
+                selected_end_year = int(range_cols[1].selectbox(
+                    "结束年份", years, index=0, key=end_key,
+                ))
+                first_year, last_year = sorted((selected_start_year, selected_end_year))
+                st.caption(f"自动统计 {first_year}—{last_year} 年（含首尾）的全部条目。")
+
+        scoped = flt.release_period_scope(
+            works, mode, year=selected_year, quarter=selected_quarter,
+            start_year=selected_start_year, end_year=selected_end_year,
+        )
+        scope_label = flt.release_period_scope_label(
+            mode, year=selected_year, quarter=selected_quarter,
+            start_year=selected_start_year, end_year=selected_end_year,
+        )
+        mine_count = sum(item.get("score_total") is not None for item in scoped)
+        public_count = sum(item.get("bangumi_score") is not None for item in scoped)
+        paired = [
+            {"value": flt.calculate_score_diff(item)} for item in scoped
+            if flt.calculate_score_diff(item) is not None
+        ]
+        stats = (
+            ("范围条目", f"{len(scoped):,}"),
+            ("我的均分", fmt_score(flt.average_non_null(scoped, "score_total"))),
+            ("Bangumi 均分", fmt_score(flt.average_non_null(scoped, "bangumi_score"))),
+            ("平均差值", flt.format_diff(flt.average_non_null(paired, "value"))),
+        )
+        stat_html = "".join(
+            f'<div class="yg-compare-stat"><span>{html.escape(label)}</span>'
+            f'<strong>{html.escape(value)}</strong></div>'
+            for label, value in stats
+        )
+        st.markdown(
+            f'<section class="yg-period-average-result"><div>{stat_html}</div>'
+            f'<footer><span><b>{html.escape(scope_label)}</b></span>'
+            f'<span>我的评分 {mine_count:,} 部</span><span>Bangumi 评分 {public_count:,} 部</span>'
+            f'<span>同时有评分 {len(paired):,} 部</span></footer></section>',
+            unsafe_allow_html=True,
+        )
+    return scoped
+
+
 def page_library() -> None:
     header("library", "条目库", "搜索、筛选、排序，并回到每一次观看与阅读的记录。")
     works = hydrated_works()
@@ -1572,11 +1904,13 @@ def page_library() -> None:
         for key in (
             "lib_query", "lib_type", "lib_status", "lib_sort", "lib_view", "lib_subtype",
             "lib_year", "lib_tags", "lib_mine", "lib_bgm", "lib_direction", "lib_abs",
-            "library_page", "library_page_size",
+            "library_page", "library_page_size", "library_period_mode", "library_period_year",
+            "library_period_quarter", "library_period_years", "library_period_start_year",
+            "library_period_end_year", "library_period_average_enabled",
         ):
             st.session_state.pop(key, None)
         st.rerun()
-    count_col.caption(f"数据库共 {len(works)} 个条目 · 默认显示全部，包括未评分、未选择 Bangumi 数据和无标签条目")
+    count_col.caption(f"数据库共 {len(works)} 个条目 · 默认显示全部")
     with st.container(key="library_filter_bar"):
         q = st.text_input("搜索条目", placeholder="搜索中文名、原名、标签、短评、角色或台词", key="lib_query")
         c1,c2,c3,c4 = st.columns([1,1,1.2,1.1])
@@ -1584,13 +1918,28 @@ def page_library() -> None:
         status_filter = c2.selectbox("状态", ["全部"] + STATUSES, key="lib_status")
         sort_label = c3.selectbox("排序", list(LIBRARY_SORTS), key="lib_sort")
         view_mode = c4.segmented_control("显示", ["网格", "列表"], default="网格", key="lib_view") or "网格"
-    years = sorted({year for w in works if (year := flt.derive_year(w)) is not None}, reverse=True)
-    tags = [t["name"] for t in tags_snapshot() if t.get("category") == "Bangumi"]
+    period_works = _render_period_average_panel(works, "library")
+    period_ids = {int(work["id"]) for work in period_works}
+    year_quarters = flt.year_quarter_options(works)
+    year_quarter_choices = ["全部"] + year_quarters
+    if st.session_state.get("lib_year", "全部") not in year_quarter_choices:
+        # Older sessions stored an integer year.  Reset that stale value once
+        # so the upgraded year/quarter selectbox cannot fail on hot reload.
+        st.session_state.lib_year = "全部"
+    tags = sorted({t["name"] for t in tags_snapshot() if t.get("category") == "Bangumi"}, key=str.casefold)
     with st.expander("高级筛选与排序", expanded=False):
         c1,c2,c3 = st.columns(3)
         subtype_filter = c1.selectbox("子类型", ["全部"] + SUBTYPES, key="lib_subtype")
-        year_filter = c2.selectbox("年份", ["全部"] + years + ["未知年份"], key="lib_year")
-        tag_filter = c3.multiselect("标签（多选为任意匹配）", tags, key="lib_tags")
+        year_filter = c2.selectbox(
+            "年份 / 季度", year_quarter_choices, key="lib_year",
+            help="按作品首播或发售日期归入自然季度；只有年份的旧条目会标记为季度未知。",
+        )
+        tag_filter = c3.multiselect(
+            "标签（可搜索、多选）", tags, key="lib_tags",
+            placeholder="输入标签名搜索，可连续多选",
+            help="输入关键词会实时筛选标签；选择多个标签时，匹配任意一个即保留条目。",
+            filter_mode="fuzzy",
+        )
         c5,c6,c7,c8 = st.columns(4)
         mine_interval = c5.selectbox("我的评分区间", ["全部"] + SCORE_INTERVALS, key="lib_mine")
         bgm_interval = c6.selectbox("Bangumi 评分区间", ["全部"] + SCORE_INTERVALS, key="lib_bgm")
@@ -1600,9 +1949,8 @@ def page_library() -> None:
     filtered = []
     for w in works:
         diff = w.get("score_diff")
-        work_year = flt.derive_year(w)
-        year_ok = year_filter == "全部" or (year_filter == "未知年份" and work_year is None) or year_filter == work_year
-        if w["id"] in matched_ids and (type_filter == "全部" or w.get("type") == type_filter) and (subtype_filter == "全部" or w.get("subtype") == subtype_filter) and (status_filter == "全部" or w.get("status") == status_filter) and year_ok and flt.matches_any_tag(w, tag_filter) and score_interval(w.get("score_total"), mine_interval) and score_interval(w.get("bangumi_score"), bgm_interval) and flt.diff_direction_matches(diff, direction) and diff_interval(diff, abs_interval):
+        year_ok = flt.year_quarter_matches(w, year_filter)
+        if int(w["id"]) in period_ids and w["id"] in matched_ids and (type_filter == "全部" or w.get("type") == type_filter) and (subtype_filter == "全部" or w.get("subtype") == subtype_filter) and (status_filter == "全部" or w.get("status") == status_filter) and year_ok and flt.matches_any_tag(w, tag_filter) and score_interval(w.get("score_total"), mine_interval) and score_interval(w.get("bangumi_score"), bgm_interval) and flt.diff_direction_matches(diff, direction) and diff_interval(diff, abs_interval):
             filtered.append(w)
     st.caption(f"当前查询结果：{len(filtered)} / {len(works)} 个条目")
     if filtered:
@@ -1611,6 +1959,7 @@ def page_library() -> None:
         filter_signature = (
             q, type_filter, status_filter, sort_label, view_mode, subtype_filter, str(year_filter),
             tuple(tag_filter), mine_interval, bgm_interval, direction, abs_interval, len(sorted_items), page_size,
+            tuple(sorted(period_ids)),
         )
         if st.session_state.get("_library_page_state") != filter_signature:
             st.session_state._library_page_state = filter_signature
@@ -1627,7 +1976,7 @@ def page_library() -> None:
             for start in range(0, len(page_items), 3):
                 columns = st.columns(3)
                 for column, work in zip(columns, page_items[start:start + 3]):
-                    with column: work_grid_card(work, "library_grid")
+                    with column: work_grid_card(work, "library_grid", show_period=True)
         else:
             ranking_list(page_items, "library", start + 1)
         render_jump_pager(
@@ -1676,8 +2025,9 @@ def subject_card(
             release_date = subject.get("release_date") or subject.get("date") or ""
             year = str(release_date)[:4] if release_date else "—"
             date_label = "首播日期" if inferred == "动画" else "发售日期"
+            score_text, score_source = _subject_score_display(subject)
             st.write(
-                f"{date_label} {release_date or '—'} · 年份 {year} · 评分 {fmt_score(rating.get('score'))} "
+                f"{date_label} {release_date or '—'} · 年份 {year} · 评分 {score_text}{score_source} "
                 f"· 评分人数 {normalized.get('bangumi_total_votes') if normalized.get('bangumi_total_votes') is not None else '—'} "
                 f"· 排名 {rating.get('rank') or '—'}"
             )
@@ -1809,7 +2159,7 @@ def render_work_form(existing: dict[str, Any] | None = None) -> None:
         start_date = draft.get("start_date")
         finish_date = draft.get("finish_date")
         st.subheader("我的评分")
-        score_config = scoring.load_score_config()
+        score_config = scoring.score_config_for_type(work_type)
         automatic = st.toggle("自动综合评分", key=auto_key, help="按作品本体、个人感受和符合条件的时代加权计算。")
         component_values: dict[str, float | None] = {}
         custom_score_values = _custom_scores(draft)
@@ -1827,13 +2177,15 @@ def render_work_form(existing: dict[str, Any] | None = None) -> None:
                     component_values[field] = col.number_input(
                         label, min_value=0.0, max_value=10.0,
                         value=float(current_score) if current_score is not None else None,
-                        step=0.1, format="%.1f", placeholder="未评分", key=f"{form_key}_{field}",
+                        step=0.1, format="%.2f", placeholder="未评分", key=f"{form_key}_{field}",
                     )
         total_votes = draft.get("bangumi_total_votes")
-        if scoring.should_show_special_scores(total_votes):
+        if scoring.should_show_special_scores(total_votes, work_type):
+            vote_threshold = scoring.special_vote_threshold(work_type)
+            threshold_word = "超过" if work_type == "动画" else "达到"
             st.caption(
                 f"时代加权 · 最高 {scoring.score_cap('era', score_config):g} 分 · "
-                f"Bangumi 评分人数 {int(total_votes):,} · 仅评分人数超过 3000 时显示；不填写则不加分。"
+                f"Bangumi 评分人数 {int(total_votes):,} · 仅评分人数{threshold_word} {vote_threshold:,} 时显示；不填写则不加分。"
             )
             cols = st.columns(2)
             for col, field in zip(cols, scoring.score_weights("era", score_config)):
@@ -1841,25 +2193,26 @@ def render_work_form(existing: dict[str, Any] | None = None) -> None:
                 component_values[field] = col.number_input(
                     _score_label(field, score_config), min_value=0.0, max_value=10.0,
                     value=float(current_score) if current_score is not None else None,
-                    step=0.1, format="%.1f", placeholder="未评分", key=f"{form_key}_{field}",
+                    step=0.1, format="%.2f", placeholder="未评分", key=f"{form_key}_{field}",
                 )
         else:
             for field in scoring.score_weights("era", score_config):
                 component_values[field] = custom_score_values.get(field) if field.startswith("custom_") else draft.get(field)
         component_values["bangumi_score"] = draft.get("bangumi_score")
         component_values["bangumi_total_votes"] = total_votes
+        component_values["type"] = work_type
         penalty_cap = scoring.imbalance_penalty_cap(component_values, total_votes, score_config)
         if penalty_cap > 0:
             gap = scoring.calculate_main_score_gap(component_values, score_config) or 0.0
             st.caption(
-                f"偏科惩罚 · 只看主评分最高项与最低项差值；当前相差 {gap:.1f} 分，最高扣 {penalty_cap:.1f} 分"
+                f"偏科惩罚 · 只看主评分最高项与最低项差值；当前相差 {gap:.2f} 分，最高扣 {penalty_cap:.2f} 分"
             )
             current_score = draft.get(scoring.IMBALANCE_PENALTY_FIELD)
             component_values[scoring.IMBALANCE_PENALTY_FIELD] = st.number_input(
                 SCORE_LABELS[scoring.IMBALANCE_PENALTY_FIELD],
                 min_value=0.0, max_value=10.0,
                 value=float(current_score) if current_score is not None else 0.0,
-                step=0.1, format="%.1f",
+                step=0.1, format="%.2f",
                 help="0 分不扣，10 分扣到当前档位上限；总扣分最高只到 2 分。",
                 key=f"{form_key}_{scoring.IMBALANCE_PENALTY_FIELD}",
             )
@@ -1880,7 +2233,7 @@ def render_work_form(existing: dict[str, Any] | None = None) -> None:
             score_total = st.number_input(
                 "总评分 · 手动评分", min_value=0.0, max_value=10.0,
                 value=float(draft["score_total"]) if draft.get("score_total") is not None else None,
-                step=0.1, format="%.1f", placeholder="未评分", key=f"{form_key}_manual_total",
+                step=0.1, format="%.2f", placeholder="未评分", key=f"{form_key}_manual_total",
             )
         short_review = st.text_input("一句话短评", value=draft.get("short_review") or "")
         long_review = st.text_area("长评", value=draft.get("long_review") or "", height=140)
@@ -1943,6 +2296,18 @@ def _render_search_notice(prefix: str) -> None:
     {"warning": st.warning, "info": st.info, "error": st.error}.get(level, st.caption)(message)
 
 
+def _subject_score_display(subject: dict[str, Any]) -> tuple[str, str]:
+    value = (subject.get("rating") or {}).get("score")
+    if value is None:
+        return "—", ""
+    precision_source = str(subject.get("precision_source") or "")
+    if precision_source == "bangumi-rating-perspective":
+        return fmt_score(value), "（Bangumi 评分透视）"
+    if precision_source.startswith("bangumi-rating-"):
+        return fmt_score(value), "（Bangumi 公共评分分布精确值）"
+    return "—", "（尚未取得可计算两位小数的公开评分分布）"
+
+
 def _search_add_bangumi() -> None:
     query = (st.session_state.get("add_query") or "").strip()
     category = st.session_state.get("add_search_category") or "全部"
@@ -1956,7 +2321,11 @@ def _search_add_bangumi() -> None:
             query, category,
             fallback_keywords=[draft.get("title"), draft.get("original_title"), draft.get("bangumi_name_cn"), draft.get("bangumi_name")],
         )
-        st.session_state.add_results = bgm.rank_search_results(query, raw_results)
+        ranked_results = bgm.rank_search_results(query, raw_results)
+        st.session_state.add_results = bgm.enrich_precise_subject_ratings(
+            ranked_results,
+            allow_network=not _running_under_streamlit_apptest(),
+        )
         if st.session_state.add_results:
             _set_search_notice("add_search")
         else:
@@ -2015,6 +2384,11 @@ def page_add() -> None:
         _readonly_notice()
         return
     header("add", "新增条目", "可以先从 Bangumi 选用公开条目数据，也可以完全手动记录。")
+    render_page_outline([
+        ("add-bangumi-search", "Bangumi 检索"),
+        ("add-local-record", "本地记录"),
+    ])
+    render_section_anchor("add-bangumi-search")
     with st.expander("Bangumi 检索与选用", expanded=not bool(st.session_state.get("new_draft"))):
         st.subheader("Bangumi 检索")
         query = st.text_input(
@@ -2028,12 +2402,14 @@ def page_add() -> None:
         _render_search_notice("add_search")
         def choose(subject, normalized):
             try:
-                detail = bgm.get_subject(subject["id"]); db.cache_subject(subject["id"], detail)
+                detail = bgm.merge_precise_subject_rating(bgm.get_subject(subject["id"]), subject)
+                db.cache_subject(subject["id"], detail)
                 fields = bgm.suggested_local_fields(detail, query, category)
                 st.session_state.new_draft = db.merge_existing_bangumi_draft(fields)
                 st.session_state.add_results=[]; st.rerun()
             except bgm.BangumiError as exc: st.error(str(exc))
         render_subject_result_views(st.session_state.get("add_results", []), "add_subject", choose, category)
+    render_section_anchor("add-local-record")
     st.subheader("本地记录")
     render_work_form()
 
@@ -2127,7 +2503,7 @@ def _save_ranked_subject(item: dict[str, Any], status: str, open_editor: bool) -
     preferred_category = _ranked_preferred_category(str(item.get("category") or "动画"))
     try:
         detail = bgm.get_subject(subject_id)
-        if item.get("precision_source") == "bangumi-rating-perspective":
+        if str(item.get("precision_source") or "").startswith("bangumi-rating-"):
             detail = dict(detail)
             detail["rating"] = {
                 **(detail.get("rating") or {}),
@@ -2201,64 +2577,281 @@ def _render_bangumi_rank_cards(
                     st.markdown(f'<div class="yg-bgm-rank-status">{status_line}</div>', unsafe_allow_html=True)
 
 
+def _render_bangumi_public_analysis(
+    rows: list[dict[str, Any]], category: str, *, cache_complete: bool,
+) -> tuple[list[dict[str, Any]], bool, tuple[Any, ...]]:
+    """Render public-score filters and return the identical ranking scope."""
+    enabled = st.toggle(
+        "时间均分",
+        value=False,
+        key="bangumi_public_analysis_enabled",
+        help="手动开启后显示标签与时间均分，并同步筛选下方排行榜。",
+    )
+    if not enabled:
+        return [dict(item) for item in rows], False, (category, False)
+
+    years = flt.release_year_options(rows)
+    tag_counts: dict[str, int] = {}
+    for item in rows:
+        for tag in flt.item_tags(item):
+            tag_counts[tag] = tag_counts.get(tag, 0) + 1
+    tag_options = sorted(tag_counts, key=lambda name: (-tag_counts[name], name.casefold()))
+
+    tag_key = "bangumi_public_tags"
+    stored_tags = st.session_state.get(tag_key)
+    if isinstance(stored_tags, list) and any(tag not in tag_counts for tag in stored_tags):
+        st.session_state.pop(tag_key, None)
+
+    with st.container(key="bangumi_public_analysis"):
+        st.markdown(
+            '<div class="yg-period-average-heading"><small>PUBLIC SCORE LENS</small>'
+            '<strong>标签与时间均分</strong><span>仅统计 Bangumi 公开评分，并同步筛选下方排行榜</span></div>',
+            unsafe_allow_html=True,
+        )
+        tag_col, mode_col = st.columns([1.22, .78], gap="large", vertical_alignment="bottom")
+        with tag_col:
+            selected_tags = st.multiselect(
+                "标签搜索（可多选）", tag_options, key=tag_key,
+                placeholder="输入标签名称搜索；多个标签按任意匹配",
+            )
+        with mode_col:
+            supports_quarter_average = category == "动画"
+            period_modes = (
+                flt.PERIOD_AVERAGE_MODES
+                if supports_quarter_average
+                else [item for item in flt.PERIOD_AVERAGE_MODES if item != "单季度"]
+            )
+            mode_options = ["全部时间", *period_modes]
+            mode_key = "bangumi_public_period_mode"
+            if st.session_state.get(mode_key) not in (None, *mode_options):
+                st.session_state.pop(mode_key, None)
+            mode = st.segmented_control(
+                "年代 / 季度均分" if supports_quarter_average else "年代均分",
+                mode_options, default="全部时间", key=mode_key,
+            ) or "全部时间"
+
+        selected_year: int | None = None
+        selected_quarter: int | None = None
+        selected_start_year: int | None = None
+        selected_end_year: int | None = None
+        year_key = "bangumi_public_period_year"
+        if not supports_quarter_average:
+            st.session_state.pop("bangumi_public_period_quarter", None)
+        if st.session_state.get(year_key) not in (None, *years):
+            st.session_state.pop(year_key, None)
+
+        if mode != "全部时间" and not years:
+            st.caption("当前公共缓存没有可识别的发行年份，暂时无法计算时间均分。")
+        elif supports_quarter_average and mode == "单季度":
+            year_col, quarter_col = st.columns(2)
+            selected_year = int(year_col.selectbox("年份", years, key=year_key))
+            quarter_options = flt.PERIOD_QUARTERS
+            present_quarters = sorted({
+                quarter for item in rows
+                if flt.derive_year_quarter(item)[0] == selected_year
+                and (quarter := flt.derive_year_quarter(item)[1]) is not None
+            }, reverse=True)
+            default_quarter = present_quarters[0] if present_quarters else quarter_options[0]
+            quarter_key = "bangumi_public_period_quarter"
+            if st.session_state.get(quarter_key) not in (None, *quarter_options):
+                st.session_state.pop(quarter_key, None)
+            selected_quarter = int(quarter_col.selectbox(
+                "季度", quarter_options, index=quarter_options.index(default_quarter),
+                key=quarter_key, format_func=lambda value: f"Q{value}",
+            ))
+        elif mode == "单年":
+            selected_year = int(st.selectbox("年份", years, key=year_key))
+        elif mode == "年代范围":
+            start_key = "bangumi_public_period_start_year"
+            end_key = "bangumi_public_period_end_year"
+            for range_key in (start_key, end_key):
+                if st.session_state.get(range_key) not in (None, *years):
+                    st.session_state.pop(range_key, None)
+            range_cols = st.columns(2)
+            selected_start_year = int(range_cols[0].selectbox(
+                "起始年份", years, index=min(2, len(years) - 1), key=start_key,
+            ))
+            selected_end_year = int(range_cols[1].selectbox(
+                "结束年份", years, index=0, key=end_key,
+            ))
+            first_year, last_year = sorted((selected_start_year, selected_end_year))
+            st.caption(f"自动统计 {first_year}—{last_year} 年（含首尾）的全部条目。")
+
+        if mode == "全部时间":
+            time_scoped = [dict(item) for item in rows]
+            scope_label = "全部时间"
+        else:
+            time_scoped = flt.release_period_scope(
+                rows, mode, year=selected_year, quarter=selected_quarter,
+                start_year=selected_start_year, end_year=selected_end_year,
+            ) if years else []
+            scope_label = flt.release_period_scope_label(
+                mode, year=selected_year, quarter=selected_quarter,
+                start_year=selected_start_year, end_year=selected_end_year,
+            )
+        filtered = [item for item in time_scoped if flt.matches_any_tag(item, selected_tags)]
+        scored_count = sum(item.get("score") is not None for item in filtered)
+        stats = (
+            ("筛选结果", f"{len(filtered):,}"),
+            ("Bangumi 均分", fmt_score(flt.average_non_null(filtered, "score"))),
+            ("有公开评分", f"{scored_count:,}"),
+            ("可搜索标签", f"{len(tag_options):,}"),
+        )
+        stat_html = "".join(
+            f'<div class="yg-compare-stat"><span>{html.escape(label)}</span>'
+            f'<strong>{html.escape(value)}</strong></div>'
+            for label, value in stats
+        )
+        completion = "缓存完整" if cache_complete else "缓存仍在后台补全"
+        selected_label = " · ".join(selected_tags) if selected_tags else "未限定标签"
+        st.markdown(
+            f'<section class="yg-period-average-result"><div>{stat_html}</div>'
+            f'<footer><span><b>{html.escape(category)} · {html.escape(scope_label)}</b></span>'
+            f'<span>{html.escape(selected_label)}</span><span>公共缓存 {len(rows):,} 部 · {completion}</span>'
+            f'<span>不读取个人评分</span></footer></section>',
+            unsafe_allow_html=True,
+        )
+        if selected_tags:
+            tag_stat_html = "".join(
+                f'<span><b>{html.escape(tag)}</b> · '
+                f'{html.escape(fmt_score(flt.average_non_null(tag_rows, "score")))} · '
+                f'{len(tag_rows):,} 部</span>'
+                for tag in selected_tags
+                if (tag_rows := [item for item in time_scoped if tag in flt.item_tags(item)])
+            )
+            st.markdown(
+                f'<div class="yg-public-tag-averages"><small>标签均分</small>{tag_stat_html}</div>',
+                unsafe_allow_html=True,
+            )
+
+    filter_active = bool(selected_tags) or mode != "全部时间"
+    signature = (
+        category, True, tuple(selected_tags), mode, selected_year, selected_quarter,
+        selected_start_year, selected_end_year,
+    )
+    return filtered, filter_active, signature
+
+
 def render_bangumi_ranking_browser() -> None:
     render_section_heading("Bangumi 评分排行榜", "PUBLIC RANKING", "仅日本 ACGN · 按公开评分从高到低")
-    cols = st.columns([2.1, .72, .9], vertical_alignment="bottom")
-    with cols[0]:
-        category = _render_search_category_picker(
-            "分类", list(bgm.RANKING_CATEGORY_LABELS),
-            key="bangumi_rank_category", segmented=True,
+    with st.container(key="bangumi_filter_bar"):
+        query = st.text_input(
+            "搜索条目",
+            placeholder="搜索中文名、原名、标签或简介",
+            key="bangumi_rank_query",
+        ).strip()
+        cols = st.columns([2.1, .72, .9], vertical_alignment="bottom")
+        with cols[0]:
+            category = _render_search_category_picker(
+                "分类", list(bgm.RANKING_CATEGORY_LABELS),
+                key="bangumi_rank_category", segmented=True,
+            )
+        with cols[1]:
+            page_size = int(st.selectbox("每页", [8, 12, 16, 24], index=3, key="bangumi_rank_page_size"))
+        with cols[2]:
+            if st.button("刷新排行榜缓存", use_container_width=True, key="bangumi_rank_refresh"):
+                if _block_readonly_action():
+                    _readonly_notice()
+                    return
+                started = bgm.start_ranking_cache_refresh(force=True, max_workers=2)
+                if started:
+                    st.toast("已在后台重建完整排行榜；完成前继续使用现有缓存。")
+                else:
+                    st.info("排行榜已在后台刷新，请稍后再查看。")
+    source_links = bgm.RANKING_BROWSER_URLS
+    cached_rows = bgm.cached_ranking_subjects(category)
+    if not cached_rows:
+        try:
+            with st.spinner("正在建立 Bangumi 公共排行榜缓存…"):
+                cached_rows = bgm.ranked_browser_subjects(category, page_size + 1)
+        except bgm.BangumiError as exc:
+            st.warning(f"Bangumi 排行榜暂时读取失败：{exc}")
+            cached_rows = []
+    cache_complete = bgm.ranking_cache_complete(category)
+    if not _running_under_streamlit_apptest() and not cache_complete:
+        bgm.prewarm_ranking_subjects(category)
+
+    query_terms = query.casefold().split()
+    searched_rows = [
+        item for item in cached_rows
+        if not query_terms or all(
+            term in " ".join(
+                str(value) for value in (
+                    item.get("title"), item.get("original_title"), item.get("name_cn"),
+                    item.get("name"), item.get("summary"), *sorted(flt.item_tags(item)),
+                ) if value not in (None, "")
+            ).casefold()
+            for term in query_terms
         )
-    with cols[1]:
-        page_size = int(st.selectbox("每页", [8, 12, 16, 24], index=3, key="bangumi_rank_page_size"))
-    with cols[2]:
-        if st.button("刷新排行榜缓存", use_container_width=True, key="bangumi_rank_refresh"):
-            if _block_readonly_action():
-                _readonly_notice()
-                return
-            bgm.clear_ranking_cache()
-            st.session_state.bangumi_rank_page = 1
-            st.rerun()
-    previous_state = st.session_state.get("_bangumi_rank_state")
-    current_state = (category, page_size)
-    if previous_state != current_state:
+    ]
+    filtered_rows, analysis_active, analysis_signature = _render_bangumi_public_analysis(
+        searched_rows, category, cache_complete=cache_complete,
+    )
+    filter_active = bool(query_terms) or analysis_active
+    current_state = (page_size, query.casefold(), *analysis_signature)
+    if st.session_state.get("_bangumi_rank_state") != current_state:
         st.session_state._bangumi_rank_state = current_state
         st.session_state.bangumi_rank_page = 1
-    ranking_capacity = bgm.ranking_browser_capacity(bgm.ranking_cache_count(category))
-    max_rank_page = max(1, (ranking_capacity + page_size - 1) // page_size)
+
+    cached_total = len(cached_rows)
+    display_total = len(filtered_rows) if filter_active else cached_total
+    st.caption(f"当前查询结果：{display_total:,} / {cached_total:,} 个条目")
+    ranking_capacity = display_total if filter_active else bgm.ranking_browser_capacity(display_total)
+    max_rank_page = max(1, (max(ranking_capacity, 0) + page_size - 1) // page_size)
     page = max(1, min(max_rank_page, int(st.session_state.get("bangumi_rank_page", 1))))
-    source_links = {
-        "动画": "https://api.bgm.tv/v0/subjects?type=2&sort=rank",
-        "漫画": "https://api.bgm.tv/v0/subjects?type=1&cat=1001&sort=rank",
-        "小说": "https://api.bgm.tv/v0/subjects?type=1&cat=1002&sort=rank",
-        "游戏": "https://api.bgm.tv/v0/subjects?type=4&cat=4001&sort=rank",
-    }
-    st.caption(f"数据源 · {source_links[category]} · 当前季度缓存 {bgm.ranking_quarter_key()} · 操作按钮会写入 Yang-gumi 本地评分库")
     start_index = (page - 1) * page_size
-    # Replace the previous page immediately with the loading state.  Without
-    # using the same placeholder here, Streamlit can leave the old card grid
-    # visible while the new window is being read, even though the pager has
-    # already changed to the requested page.
-    ranking_view = st.empty()
-    try:
-        with ranking_view.container():
-            with st.spinner("正在读取 Bangumi 公开排行榜…"):
-                fetched_rows = bgm.ranked_browser_subject_window(category, start_index, page_size + 1)
-    except bgm.BangumiError as exc:
-        st.warning(f"Bangumi 排行榜暂时读取失败：{exc}")
-        fetched_rows = []
-    rows = fetched_rows[:page_size]
-    cached_total = bgm.ranking_cache_count(category)
-    display_total = cached_total if cached_total > 0 else len(rows)
-    ranking_capacity = bgm.ranking_browser_capacity(display_total)
-    if category == "动画" and rows:
+    refresh_status = bgm.ranking_refresh_status()
+    completed_at = str(refresh_status.get("completed_at") or "")
+    completed_label = completed_at.replace("T", " ")[:16] if completed_at else "尚无成功记录"
+    next_label = str(refresh_status.get("next_refresh_at") or "").replace("T", " ")[:16]
+    refresh_label = "后台刷新中" if refresh_status.get("in_progress") else f"上次完成 {completed_label}"
+    st.caption(
+        f"数据源 · {source_links[category]} · 当前季度缓存 {bgm.ranking_quarter_key()} · "
+        f"每天 00:00 自动刷新 · {refresh_label} · 下次 {next_label} · "
+        "分析区只读取 Bangumi 公共数据；卡片操作才会写入本地评分库"
+    )
+
+    # Replace the previous page immediately with the loading state. Without
+    # the same placeholder, Streamlit can briefly retain the old card grid
+    # after its pager has changed.
+    ranking_view = None
+    if filter_active:
+        fetched_rows = filtered_rows[start_index:start_index + page_size + 1]
+    else:
+        ranking_view = st.empty()
+        try:
+            with ranking_view.container():
+                with st.spinner("正在读取 Bangumi 公开排行榜…"):
+                    fetched_rows = bgm.ranked_browser_subject_window(
+                        category, start_index, page_size + 1,
+                    )
+        except bgm.BangumiError as exc:
+            st.warning(f"Bangumi 排行榜暂时读取失败：{exc}")
+            fetched_rows = []
+    rows = [dict(item) for item in fetched_rows[:page_size]]
+    access_token = "" if READ_ONLY_MODE else str(
+        st.session_state.get("_bangumi_readonly_access_token") or ""
+    )
+    if rows and access_token:
+        try:
+            with st.spinner("正在通过已连接的 Bangumi 账号补全 R18 封面与简介…"):
+                rows = bgm.enrich_authenticated_ranking_rows(rows, access_token)
+        except bgm.BangumiError as exc:
+            message = str(exc)
+            if "账号连接已失效" in message:
+                st.session_state.pop("_bangumi_readonly_access_token", None)
+                st.session_state.pop("_bangumi_readonly_account", None)
+                st.session_state.pop("bangumi_readonly_token_input", None)
+                bgm.clear_readonly_connection()
+                bgm.set_readonly_access_token("")
+                st.warning(message)
+                st.rerun()
+            st.warning(message)
+    if rows:
         rows = bgm.enrich_precise_anime_ratings(rows, allow_network=False)
-        if not _running_under_streamlit_apptest():
-            bgm.prewarm_precise_anime_ratings(rows)
-            bgm.prewarm_ranking_subjects(category)
-    ranking_view.empty()
-    with ranking_view.container():
-        page, start_index, _ = render_jump_pager(
+
+    def render_current_ranking_page() -> None:
+        render_jump_pager(
             key_prefix="bangumi_rank",
             total_items=ranking_capacity,
             page_size=page_size,
@@ -2269,8 +2862,14 @@ def render_bangumi_ranking_browser() -> None:
         )
         if not rows:
             render_empty_state(
-                "这一页没有日本动画条目",
-                "真实数据已经显示完毕；可返回上一页或跳到其他有内容的页面。",
+                "没有找到相关作品" if query_terms else "当前标签或时间范围没有条目",
+                (
+                    "尝试缩短关键词，或使用页面下方的公开条目精确搜索。"
+                    if query_terms
+                    else "调整标签、年份、季度或年代范围即可恢复排行榜。"
+                    if category == "动画"
+                    else "调整标签、年份或年代范围即可恢复排行榜。"
+                ),
                 "◎",
             )
             render_jump_pager(
@@ -2302,9 +2901,125 @@ def render_bangumi_ranking_browser() -> None:
             top=False,
         )
 
+    if ranking_view is None:
+        render_current_ranking_page()
+    else:
+        ranking_view.empty()
+        with ranking_view.container():
+            render_current_ranking_page()
+
+
+def _render_bangumi_readonly_account_connection() -> None:
+    """Connect an optional Bangumi token for subject metadata only."""
+    if READ_ONLY_MODE:
+        st.caption("访客只读取主人已经缓存的 Bangumi 条目资料；账号连接不会共享到只读站。")
+        return
+    token = str(st.session_state.get("_bangumi_readonly_access_token") or "")
+    account = st.session_state.get("_bangumi_readonly_account") or {}
+    connected = bool(token and account.get("username"))
+    label = "Bangumi 账号 · 已只读连接" if connected else "Bangumi 账号 · 连接后显示 R18 封面与简介"
+    with st.expander(label, expanded=not connected):
+        if connected:
+            display_name = str(account.get("nickname") or account.get("username") or "Bangumi 用户")
+            username = str(account.get("username") or "")
+            st.success(f"已只读连接 · {display_name}（@{username}）")
+            st.caption(
+                "仅调用条目搜索、条目详情和封面接口；不读取收藏、个人评分、时间线或私密资料，"
+                "也不会把账号数据导入本地评分库。Access Token 只保存在当前 Streamlit 会话内。"
+            )
+            if st.button("断开 Bangumi 账号", key="disconnect_bangumi_readonly", use_container_width=True):
+                st.session_state.pop("_bangumi_readonly_access_token", None)
+                st.session_state.pop("_bangumi_readonly_account", None)
+                st.session_state.pop("bangumi_readonly_token_input", None)
+                bgm.clear_readonly_connection()
+                bgm.set_readonly_access_token("")
+                st.rerun()
+            return
+
+        st.caption(
+            "请在 Bangumi 官方页面生成 Access Token，然后直接粘贴到下面的密码框。"
+            "Yang-gumi 只用它读取 NSFW/R18 条目的封面、简介、标签和公开评分。"
+        )
+        st.link_button(
+            "打开 Bangumi 官方 Access Token 页面",
+            "https://next.bgm.tv/demo/access-token",
+            use_container_width=True,
+        )
+        candidate = st.text_input(
+            "Bangumi Access Token",
+            type="password",
+            key="bangumi_readonly_token_input",
+            help="不会写入数据库、配置文件、导出文件或日志；关闭当前会话后需要重新连接。",
+        ).strip()
+        if st.button(
+            "连接账号（只读）",
+            type="primary",
+            disabled=not bool(candidate),
+            key="connect_bangumi_readonly",
+            use_container_width=True,
+        ):
+            try:
+                verified = bgm.verify_readonly_access_token(candidate)
+            except bgm.BangumiError as exc:
+                st.error(str(exc))
+            else:
+                st.session_state["_bangumi_readonly_access_token"] = candidate
+                st.session_state["_bangumi_readonly_account"] = verified
+                bgm.save_readonly_connection(candidate, verified)
+                bgm.set_readonly_access_token(candidate)
+                st.rerun()
+
+
+def _render_persistent_bangumi_account_connection() -> None:
+    """Connect once, then keep the verified token hidden and DPAPI-protected."""
+    if READ_ONLY_MODE:
+        st.caption("访客只读取主人已经缓存的 Bangumi 条目资料；账号连接不会共享到只读站。")
+        return
+
+    token = str(st.session_state.get("_bangumi_readonly_access_token") or "")
+    account = st.session_state.get("_bangumi_readonly_account") or {}
+    connected = bool(token and account.get("username"))
+    if connected:
+        return
+
+    with st.expander("Bangumi 账号 · 连接后显示 R18 封面与简介", expanded=True):
+        st.caption(
+            "请在 Bangumi 官方页面生成 Access Token，然后只粘贴一次。Yang-gumi 仅用它读取 "
+            "NSFW/R18 条目的封面、简介、标签和公共评分。"
+        )
+        st.link_button(
+            "打开 Bangumi 官方 Access Token 页面",
+            "https://next.bgm.tv/demo/access-token",
+            use_container_width=True,
+        )
+        candidate = st.text_input(
+            "Bangumi Access Token",
+            type="password",
+            key="bangumi_readonly_token_input",
+            help="验证成功后使用 Windows DPAPI 加密保存；不会写入数据库、导出或日志，页面不会回显。",
+        ).strip()
+        if st.button(
+            "连接账号（只读）",
+            type="primary",
+            disabled=not bool(candidate),
+            key="connect_bangumi_persistent",
+            use_container_width=True,
+        ):
+            try:
+                verified = bgm.verify_readonly_access_token(candidate)
+            except bgm.BangumiError as exc:
+                st.error(str(exc))
+            else:
+                st.session_state["_bangumi_readonly_access_token"] = candidate
+                st.session_state["_bangumi_readonly_account"] = verified
+                bgm.save_readonly_connection(candidate, verified)
+                bgm.set_readonly_access_token(candidate)
+                st.rerun()
+
 
 def page_match() -> None:
     header("match", "Bangumi", "只读查看 Bangumi 公开评分、排名、标签与条目信息。")
+    _render_persistent_bangumi_account_connection()
     query_hint_id = st.session_state.get("match_work_id")
     query_hint = db.get_work(query_hint_id) if query_hint_id else None
     if query_hint:
@@ -2379,9 +3094,21 @@ def _render_compare_dimension_lab(
     type_filter: str,
     status_filter: str,
     tag_filter: list[str],
+    bias_filter: str,
 ) -> None:
-    config = scoring.load_score_config()
-    dimensions = _active_score_dimensions(config)
+    if type_filter != "全部":
+        config = scoring.score_config_for_type(type_filter)
+        dimensions = _active_score_dimensions(config)
+    else:
+        config = scoring.score_config_for_type("动画")
+        dimensions = []
+        seen_fields: set[str] = set()
+        for category in ("动画", "漫画", "轻小说", "游戏"):
+            for dimension in _active_score_dimensions(scoring.score_config_for_type(category)):
+                if dimension[0] in seen_fields:
+                    continue
+                seen_fields.add(dimension[0])
+                dimensions.append(dimension)
     if not dimensions:
         return
     dimension_labels = {
@@ -2390,6 +3117,8 @@ def _render_compare_dimension_lab(
     }
     plain_labels = {field: label for field, label, _ in dimensions}
     all_dimension_fields = [field for field, _, _ in dimensions]
+    if st.session_state.get("compare_dimension_field") not in all_dimension_fields:
+        st.session_state.pop("compare_dimension_field", None)
 
     st.markdown(
         '<div class="yg-compare-section-heading"><div><small>逐项看差异</small>'
@@ -2428,6 +3157,8 @@ def _render_compare_dimension_lab(
             continue
         if not flt.matches_any_tag(work, tag_filter):
             continue
+        if not flt.compare_bias_matches(work.get("score_diff"), bias_filter):
+            continue
         has_any_score = work.get("score_total") is not None or any(
             _work_score_value(work, field) is not None for field in all_dimension_fields
         )
@@ -2462,7 +3193,8 @@ def _render_compare_dimension_lab(
         type_filter,
         status_filter,
         tuple(tag_filter),
-        len(scoped),
+        bias_filter,
+        tuple(sorted(int(work["id"]) for work in scoped)),
     )
     if st.session_state.get("_compare_dimension_page_state") != signature:
         st.session_state._compare_dimension_page_state = signature
@@ -2508,7 +3240,7 @@ def _render_compare_dimension_lab(
                 score_cols = st.columns(3, vertical_alignment="center", gap="small")
                 score_cols[0].metric(
                     selected_label,
-                    "—" if current is None else f"{float(current):.1f}",
+                    "—" if current is None else f"{float(current):.2f}",
                 )
                 score_cols[1].metric(
                     "与本项平均",
@@ -2535,7 +3267,7 @@ def _render_compare_dimension_lab(
                     max_value=10.0,
                     value=None if current is None else float(current),
                     step=0.1,
-                    format="%.1f",
+                    format="%.2f",
                     placeholder="未评分",
                     key=f"compare_dimension_value_{dimension_field}_{work['id']}",
                     label_visibility="collapsed",
@@ -2563,7 +3295,7 @@ def _render_compare_dimension_lab(
                     )
                     st.session_state.compare_dimension_notice = (
                         f"《{work.get('title') or '未命名作品'}》的{selected_label}"
-                        f"已改为 {float(new_value):.1f}；{mode_note}"
+                        f"已改为 {float(new_value):.2f}；{mode_note}"
                     )
                     st.rerun()
                 except Exception as exc:
@@ -2605,9 +3337,9 @@ def page_detail() -> None:
         if bangumi_tags: st.caption("Bangumi 标签 · " + " · ".join(bangumi_tags))
     if work.get("short_review"): st.info(work["short_review"])
     st.subheader("分项评分")
-    score_config = scoring.load_score_config()
+    score_config = scoring.score_config_for_type(work.get("type"))
     detail_score_fields = list(scoring.score_weights("body", score_config)) + list(scoring.score_weights("feeling", score_config))
-    if scoring.should_show_special_scores(work.get("bangumi_total_votes")):
+    if scoring.should_show_special_scores(work.get("bangumi_total_votes"), work.get("type")):
         detail_score_fields += list(scoring.score_weights("era", score_config))
     if scoring.imbalance_penalty_cap(work, work.get("bangumi_total_votes"), score_config) > 0 or work.get(scoring.IMBALANCE_PENALTY_FIELD) is not None:
         detail_score_fields.append(scoring.IMBALANCE_PENALTY_FIELD)
@@ -2632,7 +3364,7 @@ def page_detail() -> None:
     st.divider()
     if READ_ONLY_MODE:
         return_page = str(st.session_state.get("detail_return_page") or "条目库")
-        if return_page in {"条目详情", "新增条目", "Bangumi", "数据管理"}:
+        if return_page in {"条目详情", "新增条目"}:
             return_page = "条目库"
         cols = st.columns(2)
         cols[0].button(
@@ -2687,6 +3419,11 @@ def page_detail() -> None:
 
 def page_rankings() -> None:
     header("ranking", "排行榜", "把你的评分拆成不同视角，再看看哪些作品总会浮到上面。")
+    render_page_outline([
+        ("ranking-controls", "榜单设置"),
+        ("ranking-results", "榜单内容"),
+    ])
+    render_section_anchor("ranking-controls")
     c1,c2,c3,c4=st.columns([1.4,1,1,.9])
     metric=c1.selectbox("榜单类型",list(_rank_metric_map()),key="rank_metric")
     work_type=c2.selectbox("类型",["全部"]+TYPES,key="rank_type")
@@ -2696,6 +3433,7 @@ def page_rankings() -> None:
     if work_type!="全部": works=[w for w in works if w.get("type")==work_type]
     limit=_limit_value(limit_choice,len(works))
     ranked=sort_works(works,metric,limit)
+    render_section_anchor("ranking-results")
     if ranked:
         if isinstance(limit_choice, int) and limit_choice in {10, 20, 50, 100}:
             ranking_showcase(ranked[:limit_choice], f"ranking_{work_type}_{metric}_{limit_choice}", limit_choice)
@@ -2727,12 +3465,20 @@ def _render_category_rankings_section() -> None:
     st.subheader("分类型榜单")
     c1,c2,c3,c4=st.columns([1,1.25,1,.9])
     work_type=c1.selectbox("分类",TYPES)
-    metric=c2.selectbox("排序指标",["我的总评分","剧情","角色塑造","作画 / 摄影","演出","音乐 / 配音","节奏","个人偏爱","重看 / 重玩价值","情绪后劲","氛围感","Bangumi 公共评分","我比 Bangumi 高最多"])
+    category_score_config = scoring.score_config_for_type(work_type)
+    category_metrics = ["我的总评分"]
+    category_metrics.extend(
+        label
+        for group_key in ("body", "feeling", "era")
+        for label in scoring.score_labels(group_key, category_score_config).values()
+    )
+    category_metrics.extend(["Bangumi 公共评分", "我比 Bangumi 高最多"])
+    metric=c2.selectbox("排序指标", list(dict.fromkeys(category_metrics)))
     limit_choice=c3.selectbox("榜单长度",[10,20,50,100,250,500,1000,"全部"],index=0,key="cat_limit")
     page_size=int(c4.selectbox("每页",[12,24,50,100],index=SHARE_PAGE_SIZE_INDEX,key="cat_page_size"))
     works=[w for w in hydrated_works() if w.get("type")==work_type]
     limit=_limit_value(limit_choice,len(works))
-    ranked=sort_works(works,metric,limit)
+    ranked=sort_works(works,metric,limit,category_score_config)
     signature=(work_type, metric, limit, page_size, len(ranked))
     if st.session_state.get("_cat_page_state") != signature:
         st.session_state._cat_page_state = signature
@@ -2768,7 +3514,6 @@ def page_compare() -> None:
     all_works = hydrated_works()
     works=[w for w in all_works if w.get("bangumi_id") and w.get("bangumi_score") is not None]
     mine_avg=flt.average_non_null(works,"score_total"); public_avg=flt.average_non_null(works,"bangumi_score")
-    diffs = [float(w["score_diff"]) for w in works if w.get("score_diff") is not None]
     votes = [int(w["bangumi_total_votes"]) for w in works if w.get("bangumi_total_votes") is not None]
     primary_stats = (
         ("已对比", f"{len(works):,}"),
@@ -2782,9 +3527,6 @@ def page_compare() -> None:
         for label, value in primary_stats
     )
     secondary_stats = (
-        ("偏高", sum(d > .5 for d in diffs)),
-        ("偏低", sum(d < -.5 for d in diffs)),
-        ("接近", sum(abs(d) <= .5 for d in diffs)),
         ("平均评分人数", "—" if not votes else f"{sum(votes)//len(votes):,}"),
     )
     secondary_html = "".join(
@@ -2796,12 +3538,32 @@ def page_compare() -> None:
         f'<footer>{secondary_html}</footer></section>',
         unsafe_allow_html=True,
     )
+    period_works = _render_period_average_panel(works, "compare")
+    period_diffs = [
+        float(work["score_diff"])
+        for work in period_works
+        if work.get("score_diff") is not None
+    ]
+    bias_counts = {
+        "偏高": sum(diff > .5 for diff in period_diffs),
+        "偏低": sum(diff < -.5 for diff in period_diffs),
+        "接近": sum(abs(diff) <= .5 for diff in period_diffs),
+    }
+    bias_filter = st.segmented_control(
+        "评分差筛选",
+        flt.COMPARE_BIAS_OPTIONS,
+        default="全部",
+        key="compare_bias_filter",
+        format_func=lambda option: (
+            option if option == "全部" else f"{option} {bias_counts[option]}"
+        ),
+    ) or "全部"
     with st.expander("筛选对比范围", expanded=False):
         c1,c2,c3=st.columns([.8, .8, 1.4])
         type_filter=c1.selectbox("类型",["全部"]+TYPES,key="compare_type")
         status_filter=c2.selectbox("状态",["全部"]+STATUSES,key="compare_status")
         tag_filter=c3.multiselect("标签（任意匹配）",[t["name"] for t in tags_snapshot() if t.get("category") == "Bangumi"],key="compare_tags")
-    _render_compare_dimension_lab(all_works, type_filter, status_filter, tag_filter)
+    _render_compare_dimension_lab(period_works, type_filter, status_filter, tag_filter, bias_filter)
 
 
 def page_tags() -> None:
@@ -2973,17 +3735,27 @@ def page_tag_works() -> None:
 
 
 def appearance_settings_panel() -> None:
-    st.divider()
-    st.subheader("外观设置")
-    st.caption("全站背景已固定为纯深灰；这里只保留界面动画强度设置。")
+    render_section_heading("界面动效", "APPEARANCE", "纯深灰背景 · 即时生效")
     settings = ui_cfg.load_settings()
     global_settings = settings["global"]
     animation_labels = {"关闭":"off", "轻微":"light", "标准":"standard"}
     current_strength = global_settings.get("animation_strength", "light") if global_settings.get("enable_motion", True) else "off"
     if current_strength not in animation_labels.values(): current_strength = "light"
-    with st.form("appearance_form"):
-        animation_label = st.selectbox("动画强度", list(animation_labels), index=list(animation_labels.values()).index(current_strength))
-        submitted = st.form_submit_button("保存并立即应用", type="primary", use_container_width=True)
+    with st.container(key="data_appearance_panel", border=True):
+        st.caption("全站背景固定为纯深灰；这里只调整页面切换和卡片反馈的动画强度。")
+        with st.form("appearance_form", border=False):
+            setting_col, save_col = st.columns([3, 1], gap="medium", vertical_alignment="bottom")
+            with setting_col:
+                animation_label = st.selectbox(
+                    "动画强度",
+                    list(animation_labels),
+                    index=list(animation_labels.values()).index(current_strength),
+                )
+            with save_col:
+                submitted = st.form_submit_button("保存并应用", type="primary", use_container_width=True)
+        reset_col, _ = st.columns([1, 3], gap="medium")
+        if reset_col.button("恢复默认外观", key="reset_appearance", use_container_width=True):
+            ui_cfg.reset_settings(); st.success("已恢复默认外观。"); st.rerun()
     if submitted:
         strength = animation_labels[animation_label]
         global_settings.update({
@@ -2993,8 +3765,6 @@ def appearance_settings_panel() -> None:
         ui_cfg.save_settings(settings)
         st.success("外观设置已保存并应用。")
         st.rerun()
-    if st.button("恢复全部默认外观", key="reset_appearance"):
-        ui_cfg.reset_settings(); st.success("已恢复默认外观。"); st.rerun()
 
 
 def _scoring_setting_rows(config: dict[str, Any]) -> list[dict[str, str]]:
@@ -3010,13 +3780,21 @@ def _scoring_setting_rows(config: dict[str, Any]) -> list[dict[str, str]]:
     return rows
 
 
-def _save_scoring_config_and_recalculate(config: dict[str, Any]) -> int:
+def _save_scoring_config_and_recalculate(
+    config: dict[str, Any], scoring_type: str = "动画",
+) -> int:
     db.backup_database()
-    scoring.save_score_config(config)
-    return db.recalculate_auto_scores()
+    scoring.save_score_config(config, scoring_type)
+    return db.recalculate_auto_scores(scoring_type)
 
 
-def _render_dimension_manager(group_key: str, group_label: str, config: dict[str, Any]) -> None:
+def _render_dimension_manager(
+    group_key: str,
+    group_label: str,
+    config: dict[str, Any],
+    scoring_type: str,
+    type_key: str,
+) -> None:
     with st.expander(f"{group_label} · 添加评分维度 / 删除评分维度", expanded=False):
         inactive = scoring.inactive_builtin_fields(config)
         active_labels = scoring.score_labels(group_key, config)
@@ -3028,10 +3806,10 @@ def _render_dimension_manager(group_key: str, group_label: str, config: dict[str
                 "从未启用项目中选择",
                 builtin_options,
                 format_func=lambda field: "不添加已有项目" if not field else inactive[field],
-                key=f"score_add_builtin_{group_key}",
+                key=f"score_add_builtin_{type_key}_{group_key}",
             )
-            custom_label = st.text_input("或自定义新维度名称", key=f"score_add_custom_{group_key}", placeholder="例如：世界观、声优表现")
-            if st.button("添加评分维度", key=f"score_add_dimension_{group_key}", use_container_width=True):
+            custom_label = st.text_input("或自定义新维度名称", key=f"score_add_custom_{type_key}_{group_key}", placeholder="例如：世界观、声优表现")
+            if st.button("添加评分维度", key=f"score_add_dimension_{type_key}_{group_key}", use_container_width=True):
                 next_config = json.loads(json.dumps(config, ensure_ascii=False))
                 weights = next_config[group_key].setdefault("weights", {})
                 labels = next_config[group_key].setdefault("labels", {})
@@ -3045,8 +3823,8 @@ def _render_dimension_manager(group_key: str, group_label: str, config: dict[str
                     st.warning("请先选择一个已有项目，或填写自定义维度名称。")
                     return
                 weights[field] = 0.10
-                changed = _save_scoring_config_and_recalculate(next_config)
-                st.success(f"已添加评分维度；已重新计算 {changed} 条自动评分。")
+                changed = _save_scoring_config_and_recalculate(next_config, scoring_type)
+                st.success(f"已添加评分维度；已重新计算 {changed} 条{scoring_type}自动评分。")
                 st.rerun()
         with delete_col:
             st.caption("删除评分维度")
@@ -3055,20 +3833,37 @@ def _render_dimension_manager(group_key: str, group_label: str, config: dict[str
                 "选择要从本组移除的维度",
                 delete_options,
                 format_func=lambda field: active_labels.get(field, field),
-                key=f"score_delete_dimension_select_{group_key}",
+                key=f"score_delete_dimension_select_{type_key}_{group_key}",
             )
-            if st.button("删除评分维度", key=f"score_delete_dimension_{group_key}", use_container_width=True, disabled=len(delete_options) <= 1):
+            if st.button("删除评分维度", key=f"score_delete_dimension_{type_key}_{group_key}", use_container_width=True, disabled=len(delete_options) <= 1):
                 next_config = json.loads(json.dumps(config, ensure_ascii=False))
                 next_config[group_key].setdefault("weights", {}).pop(target, None)
                 next_config[group_key].setdefault("labels", {}).pop(target, None)
-                changed = _save_scoring_config_and_recalculate(next_config)
-                st.success(f"已删除评分维度；已重新计算 {changed} 条自动评分。")
+                changed = _save_scoring_config_and_recalculate(next_config, scoring_type)
+                st.success(f"已删除评分维度；已重新计算 {changed} 条{scoring_type}自动评分。")
                 st.rerun()
 
 
 def page_scoring_settings() -> None:
     subtitle = "查看当前自动综合评分的维度、分组上限与项目占比。" if READ_ONLY_MODE else "调整自动综合评分的三大项与子项目占比。"
     header("data", "评分设置", subtitle)
+    if not READ_ONLY_MODE:
+        render_page_outline([
+            ("scoring-type", "评分类型"),
+            ("scoring-dimensions", "维度管理"),
+            ("scoring-details", "评分细则"),
+        ])
+    render_section_anchor("scoring-type")
+    scoring_type = st.segmented_control(
+        "评分类型",
+        ["动画", "漫画", "轻小说", "游戏"],
+        default="动画",
+        key="scoring_settings_type",
+    ) or "动画"
+    type_key = {
+        "动画": "anime", "漫画": "manga", "轻小说": "light_novel", "游戏": "game",
+    }[scoring_type]
+    selected_config = scoring.score_config_for_type(scoring_type)
     if READ_ONLY_MODE:
         st.info("只读分享仅展示当前评分维度和比重，不能修改设置。")
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -3081,63 +3876,76 @@ def page_scoring_settings() -> None:
             key="readonly_scoring_analysis_xlsx",
         )
         st.caption("逐部包含总评分、全部当前评分小项目和评分规则；不含私人备注、本地路径或维护数据。")
-        st.dataframe(pd.DataFrame(_scoring_setting_rows(scoring.load_score_config())), hide_index=True, use_container_width=True)
+        st.dataframe(pd.DataFrame(_scoring_setting_rows(selected_config)), hide_index=True, use_container_width=True)
         return
-    config = scoring.load_score_config()
-    st.caption("保存或重置后，所有“自动综合评分”的作品会按当前设置重新计算；手动总评分不会被覆盖。")
+    if scoring_type != "动画":
+        threshold = scoring.special_vote_threshold(scoring_type)
+        st.info(
+            f"当前分类公式已作为{scoring_type}的默认评分设置；时代加权在 Bangumi 评分人数达到 {threshold:,} 时启用。"
+        )
+    config = scoring.load_score_config(scoring_type)
+    st.caption(f"保存或重置后，所有{scoring_type}的“自动综合评分”作品会按当前设置重新计算；其他分类与手动总评分不会被覆盖。")
+    render_section_anchor("scoring-dimensions")
     for group_key, group_label in scoring.SCORE_GROUPS.items():
-        _render_dimension_manager(group_key, group_label, config)
-    with st.form("scoring_settings_form"):
+        _render_dimension_manager(group_key, group_label, config, scoring_type, type_key)
+    render_section_anchor("scoring-details")
+    with st.form(f"scoring_settings_form_{type_key}"):
         next_config = json.loads(json.dumps(config, ensure_ascii=False))
-        for group_key, group_label in scoring.SCORE_GROUPS.items():
-            st.subheader(group_label)
-            cap_col, info_col = st.columns([1, 3], vertical_alignment="center")
-            next_config[group_key]["cap"] = cap_col.number_input(
-                f"{group_label}满分",
-                min_value=0.1,
-                max_value=10.0,
-                value=float(scoring.score_cap(group_key, config)),
-                step=0.1,
-                format="%.1f",
-                key=f"score_setting_{group_key}_cap",
-            )
-            info_col.caption("下面填写该组内每个子项目的占比；保存时会按相对比例参与计算。")
-            fields = list(scoring.score_weights(group_key, config).items())
-            next_config[group_key].setdefault("labels", {})
-            for start in range(0, len(fields), 3):
-                cols = st.columns(3)
-                for col, (field, weight) in zip(cols, fields[start:start + 3]):
-                    label = col.text_input(
-                        "维度名称",
-                        value=_score_label(field, config),
-                        max_chars=24,
-                        key=f"score_setting_label_{group_key}_{field}",
-                    ).strip() or _score_label(field, config)
-                    percent = col.number_input(
-                        f"{label}占比 · 当前上限 {scoring.score_item_cap(group_key, field, config):g} 分",
-                        min_value=0.1,
-                        max_value=100.0,
-                        value=float(weight) * 100.0,
-                        step=0.5,
-                        format="%.1f",
-                        key=f"score_setting_{field}",
-                    )
-                    next_config[group_key]["weights"][field] = percent / 100.0
-                    next_config[group_key]["labels"][field] = label
+        group_items = list(scoring.SCORE_GROUPS.items())
+        group_tabs = st.tabs([
+            f"{group_label} · {scoring.score_cap(group_key, config):g} 分"
+            for group_key, group_label in group_items
+        ])
+        for tab, (group_key, group_label) in zip(group_tabs, group_items):
+            with tab:
+                st.subheader(group_label)
+                cap_col, info_col = st.columns([1, 3], vertical_alignment="center")
+                next_config[group_key]["cap"] = cap_col.number_input(
+                    f"{group_label}满分",
+                    min_value=0.1,
+                    max_value=10.0,
+                    value=float(scoring.score_cap(group_key, config)),
+                    step=0.1,
+                    format="%.2f",
+                    key=f"score_setting_{type_key}_{group_key}_cap",
+                )
+                info_col.caption("下面填写该组内每个子项目的占比；保存时会按相对比例参与计算。")
+                fields = list(scoring.score_weights(group_key, config).items())
+                next_config[group_key].setdefault("labels", {})
+                for start in range(0, len(fields), 3):
+                    cols = st.columns(3)
+                    for col, (field, weight) in zip(cols, fields[start:start + 3]):
+                        label = col.text_input(
+                            "维度名称",
+                            value=_score_label(field, config),
+                            max_chars=24,
+                            key=f"score_setting_label_{type_key}_{group_key}_{field}",
+                        ).strip() or _score_label(field, config)
+                        percent = col.number_input(
+                            f"{label}占比 · 当前上限 {scoring.score_item_cap(group_key, field, config):g} 分",
+                            min_value=0.1,
+                            max_value=100.0,
+                            value=float(weight) * 100.0,
+                            step=0.5,
+                            format="%.1f",
+                            key=f"score_setting_{type_key}_{field}",
+                        )
+                        next_config[group_key]["weights"][field] = percent / 100.0
+                        next_config[group_key]["labels"][field] = label
         submitted = st.form_submit_button("保存评分设置并重新计算", type="primary", use_container_width=True)
     if submitted:
         try:
-            changed = _save_scoring_config_and_recalculate(next_config)
-            st.success(f"评分设置已保存；已重新计算 {changed} 条自动评分。")
+            changed = _save_scoring_config_and_recalculate(next_config, scoring_type)
+            st.success(f"{scoring_type}评分设置已保存；已重新计算 {changed} 条自动评分。")
             st.rerun()
         except Exception as exc:
             st.error(f"保存失败：{exc}")
-    if st.button("重置评分设置并重新计算", key="reset_scoring_settings", use_container_width=True):
+    if st.button("重置评分设置并重新计算", key=f"reset_scoring_settings_{type_key}", use_container_width=True):
         try:
             db.backup_database()
-            scoring.reset_score_config()
-            changed = db.recalculate_auto_scores()
-            st.success(f"评分设置已恢复默认；已重新计算 {changed} 条自动评分。")
+            scoring.reset_score_config(scoring_type)
+            changed = db.recalculate_auto_scores(scoring_type)
+            st.success(f"{scoring_type}评分设置已恢复默认；已重新计算 {changed} 条自动评分。")
             st.rerun()
         except Exception as exc:
             st.error(f"重置失败：{exc}")
@@ -3160,85 +3968,88 @@ def _render_remote_share_panel() -> None:
     active = state in share_ctl.ACTIVE_STATES
     running = state in {"running", "degraded"}
 
-    st.subheader("公网交互式只读分享")
-    st.caption(
-        "远程访客只需用浏览器打开临时 HTTPS 链接，不需要安装程序、登录 Cloudflare、购买域名或拥有公网 IP。"
-        "分享站与主站使用同一套界面，只保留首页、条目库、排行榜、评分对比、标签筛选和只读评分设置；关闭分享后链接立即失效。"
-    )
-    controls = st.columns([1, 1, 2], gap="small")
-    if controls[0].button(
-        "开始公网分享",
-        type="primary",
-        disabled=active,
-        use_container_width=True,
-        key="start_remote_readonly_share",
-    ):
-        try:
-            share_ctl.start_remote_share()
-            st.rerun()
-        except Exception as exc:
-            st.error(f"启动失败：{exc}")
-    if controls[1].button(
-        "停止分享",
-        disabled=not active,
-        use_container_width=True,
-        key="stop_remote_readonly_share",
-    ):
-        try:
-            share_ctl.stop_remote_share()
-            st.rerun()
-        except Exception as exc:
-            st.error(f"停止失败：{exc}")
-    controls[2].caption("手动开启后由主站持续维持 · 意外退出会自动恢复 · 点击停止才关闭 · SQLite 强制只读")
-
-    metrics = st.columns(6)
-    metrics[0].metric("分享状态", str(status.get("message") or "未启动"))
-    metrics[1].metric("本地只读站", _tunnel_status_text(status.get("local_state")))
-    metrics[2].metric("公网隧道", _tunnel_status_text(status.get("tunnel_state")))
-    metrics[3].metric("本次运行", share_ctl.format_duration(str(status.get("started_at") or "")) if active else "—")
-    metrics[4].metric("当前会话", int(status.get("current_sessions") or 0) if active else "—")
-    sent_bytes = int(status.get("bytes_sent") or 0)
-    metrics[5].metric("已发送", f"{sent_bytes / 1024 / 1024:.2f} MB" if active else "—")
-
-    public_url = str(status.get("public_url") or "")
-    if running and public_url:
-        if state == "degraded":
-            st.warning("公网线路正在短暂波动；系统会保留下方原链接等待恢复，请勿重新启动或更换地址。")
-        else:
-            st.success("公网链接已经建立。把下方完整链接或二维码发给需要查看的人即可；访客端只能读取。")
-        link_col, qr_col = st.columns([3, 1], gap="large", vertical_alignment="top")
-        with link_col:
-            st.code(public_url, language=None)
-            st.caption("代码框右上角也可直接复制；链接中的访问码不能删减或公开发布。")
-            link_json = json.dumps(public_url)
-            components.html(
-                f"""
-                <button id="copy-yanggumi-share" style="width:100%;height:40px;border:1px solid #3a3d45;
-                border-radius:9px;background:#24262d;color:#f1f1f3;font:600 14px sans-serif;cursor:pointer">复制链接</button>
-                <script>
-                const button = document.getElementById('copy-yanggumi-share');
-                button.onclick = async () => {{
-                  await navigator.clipboard.writeText({link_json});
-                  button.textContent = '已复制';
-                  setTimeout(() => button.textContent = '复制链接', 1600);
-                }};
-                </script>
-                """,
-                height=48,
-            )
-            st.link_button("在新页面打开只读站", public_url, use_container_width=True)
-        with qr_col:
+    render_section_heading("临时只读访问", "READ-ONLY SHARE", "按需开启 · 关闭即失效")
+    with st.container(key="data_share_panel", border=True):
+        st.caption(
+            "远程访客只需用浏览器打开临时 HTTPS 链接；分享站沿用主站界面并强制只读。"
+            "不需要安装程序、登录 Cloudflare、购买域名或拥有公网 IP。"
+        )
+        with st.container(key="data_share_controls"):
+            controls = st.columns([1, 1, 2], gap="small", vertical_alignment="center")
+        if controls[0].button(
+            "开始公网分享",
+            type="primary",
+            disabled=active,
+            use_container_width=True,
+            key="start_remote_readonly_share",
+        ):
             try:
-                st.image(share_ctl.qr_code_png(public_url), caption="扫码远程查看", use_container_width=True)
-            except Exception:
-                st.info("二维码组件将在依赖更新后显示；链接本身已经可以使用。")
-    elif state in {"starting", "reconnecting", "stopping"}:
-        st.info(str(status.get("message") or "正在处理…"))
-    elif state == "error":
-        st.error(str(status.get("message") or "公网只读分享启动失败。"))
-        st.caption("可查看 logs 中的 remote_share 日志；日志不会记录完整访问令牌。")
-    else:
-        st.info("当前没有公网分享。点击“开始公网分享”会重新生成最新只读快照并创建临时链接。")
+                share_ctl.start_remote_share()
+                st.rerun()
+            except Exception as exc:
+                st.error(f"启动失败：{exc}")
+        if controls[1].button(
+            "停止分享",
+            disabled=not active,
+            use_container_width=True,
+            key="stop_remote_readonly_share",
+        ):
+            try:
+                share_ctl.stop_remote_share()
+                st.rerun()
+            except Exception as exc:
+                st.error(f"停止失败：{exc}")
+        controls[2].caption("主站持续维持 · 意外退出自动恢复 · SQLite 强制只读")
+
+        with st.container(key="data_share_metrics"):
+            metrics = st.columns(6)
+        metrics[0].metric("分享状态", str(status.get("message") or "未启动"))
+        metrics[1].metric("本地只读站", _tunnel_status_text(status.get("local_state")))
+        metrics[2].metric("公网隧道", _tunnel_status_text(status.get("tunnel_state")))
+        metrics[3].metric("本次运行", share_ctl.format_duration(str(status.get("started_at") or "")) if active else "—")
+        metrics[4].metric("当前会话", int(status.get("current_sessions") or 0) if active else "—")
+        sent_bytes = int(status.get("bytes_sent") or 0)
+        metrics[5].metric("已发送", f"{sent_bytes / 1024 / 1024:.2f} MB" if active else "—")
+
+        public_url = str(status.get("public_url") or "")
+        if running and public_url:
+            if state == "degraded":
+                st.warning("公网线路正在短暂波动；系统会保留下方原链接等待恢复，请勿重新启动或更换地址。")
+            else:
+                st.success("公网链接已经建立。把下方完整链接或二维码发给需要查看的人即可；访客端只能读取。")
+            link_col, qr_col = st.columns([4, 1], gap="large", vertical_alignment="top")
+            with link_col:
+                st.code(public_url, language=None)
+                st.caption("代码框右上角也可直接复制；链接中的访问码不能删减或公开发布。")
+                link_json = json.dumps(public_url)
+                components.html(
+                    f"""
+                    <button id="copy-yanggumi-share" style="width:100%;height:40px;border:1px solid #3a3d45;
+                    border-radius:9px;background:#24262d;color:#f1f1f3;font:600 14px sans-serif;cursor:pointer">复制链接</button>
+                    <script>
+                    const button = document.getElementById('copy-yanggumi-share');
+                    button.onclick = async () => {{
+                      await navigator.clipboard.writeText({link_json});
+                      button.textContent = '已复制';
+                      setTimeout(() => button.textContent = '复制链接', 1600);
+                    }};
+                    </script>
+                    """,
+                    height=48,
+                )
+                st.link_button("在新页面打开只读站", public_url, use_container_width=True)
+            with qr_col:
+                try:
+                    st.image(share_ctl.qr_code_png(public_url), caption="扫码远程查看", width=220)
+                except Exception:
+                    st.info("二维码组件将在依赖更新后显示；链接本身已经可以使用。")
+        elif state in {"starting", "reconnecting", "stopping"}:
+            st.info(str(status.get("message") or "正在处理…"))
+        elif state == "error":
+            st.error(str(status.get("message") or "公网只读分享启动失败。"))
+            st.caption("可查看 logs 中的 remote_share 日志；日志不会记录完整访问令牌。")
+        else:
+            st.info("当前没有公网分享。点击“开始公网分享”会重新生成最新只读快照并创建临时链接。")
 
 
 def page_data() -> None:
@@ -3256,113 +4067,133 @@ def page_data() -> None:
         st.caption("分享端展示评分结果与当前权重，但不包含私人备注、本地资源路径和维护功能。")
         st.dataframe(pd.DataFrame(_scoring_setting_rows(scoring.load_score_config())), hide_index=True, use_container_width=True)
         return
+    render_page_outline([
+        ("data-share", "只读分享"),
+        ("data-transfer", "备份与导出"),
+        ("data-maintenance", "维护工具"),
+        ("data-appearance", "外观设置"),
+    ])
+    render_section_anchor("data-share")
     _render_remote_share_panel()
-    st.divider()
+    render_section_anchor("data-transfer")
     backups = db.list_backups()
-    st.caption(f"数据库路径 · {db.DB_PATH}")
-    metrics = st.columns(5)
-    for col, (label, value) in zip(metrics, [
-        ("works", counts["works"]), ("tags", counts["tags"]), ("work_tags", counts["work_tags"]),
-        ("seasonal cache", counts["seasonal_anime_cache"]), ("最近备份", datetime.fromtimestamp(backups[0].stat().st_mtime).strftime("%m-%d %H:%M") if backups else "暂无")]):
-        col.metric(label, value)
+    render_section_heading("备份、恢复与导出", "LOCAL DATA", "高风险操作默认收起")
+    with st.container(key="data_transfer_panel", border=True):
+        st.caption(f"当前数据库 · {db.DB_PATH}")
+        with st.container(key="data_transfer_metrics"):
+            metrics = st.columns(5)
+            for col, (label, value) in zip(metrics, [
+                ("作品", counts["works"]), ("标签", counts["tags"]), ("标签关联", counts["work_tags"]),
+                ("季番缓存", counts["seasonal_anime_cache"]), ("最近备份", datetime.fromtimestamp(backups[0].stat().st_mtime).strftime("%m-%d %H:%M") if backups else "暂无")]):
+                col.metric(label, value)
 
-    left, right = st.columns(2, gap="large")
-    with left:
-        st.subheader("备份与恢复")
-        if st.button("一键备份数据库", type="primary", use_container_width=True):
-            try:
-                path = db.backup_database(); st.session_state.backup_path = str(path); st.success(f"备份成功：{path}")
-            except Exception as exc: st.error(f"备份失败：{exc}")
-        backups = db.list_backups()
-        if backups:
-            selected_backup = st.selectbox("选择 backups 中的备份", [path.name for path in backups])
-            restore_confirm = st.checkbox("我确认恢复会覆盖当前数据库", key="restore_confirm")
-            restore_phrase = st.text_input("再次输入 RESTORE YANGGUMI", key="restore_phrase")
-            if st.button("恢复所选备份", disabled=not (restore_confirm and restore_phrase == "RESTORE YANGGUMI"), use_container_width=True):
+        left, right = st.columns([1.15, .85], gap="large", vertical_alignment="top")
+        with left:
+            st.markdown("### 备份与恢复")
+            st.caption("日常使用只需一键备份；覆盖数据库的操作集中在下方折叠区。")
+            if st.button("一键备份数据库", type="primary", use_container_width=True):
                 try:
-                    safety = db.restore_backup(selected_backup)
-                    st.success(f"恢复成功；恢复前快照：{safety.name}")
-                    st.rerun()
-                except Exception as exc: st.error(f"恢复失败：{exc}")
-        st.markdown("#### 加载已保存的数据")
-        uploaded_backup = st.file_uploader(
-            "选择卸载前保存或从其他电脑导出的 Yang-gumi 数据库（.db）",
-            type=["db"],
-            key="load_saved_database",
-            help="导入前会自动为当前数据库建立安全备份。",
-        )
-        load_confirm = st.checkbox(
-            "我确认加载后会以所选备份替换当前数据",
-            key="load_saved_database_confirm",
-        )
-        if st.button(
-            "加载数据",
-            disabled=uploaded_backup is None or not load_confirm,
-            use_container_width=True,
-        ):
+                    path = db.backup_database(); st.session_state.backup_path = str(path); st.success(f"备份成功：{path}")
+                except Exception as exc: st.error(f"备份失败：{exc}")
+            backups = db.list_backups()
+            with st.expander("从本机备份恢复", expanded=False):
+                if backups:
+                    selected_backup = st.selectbox("选择 backups 中的备份", [path.name for path in backups])
+                    restore_confirm = st.checkbox("我确认恢复会覆盖当前数据库", key="restore_confirm")
+                    restore_phrase = st.text_input("再次输入 RESTORE YANGGUMI", key="restore_phrase")
+                    if st.button("恢复所选备份", disabled=not (restore_confirm and restore_phrase == "RESTORE YANGGUMI"), use_container_width=True):
+                        try:
+                            safety = db.restore_backup(selected_backup)
+                            st.success(f"恢复成功；恢复前快照：{safety.name}")
+                            st.rerun()
+                        except Exception as exc: st.error(f"恢复失败：{exc}")
+                else:
+                    st.info("backups 文件夹中还没有可恢复的备份。")
+            with st.expander("加载外部数据库", expanded=False):
+                uploaded_backup = st.file_uploader(
+                    "选择卸载前保存或从其他电脑导出的 Yang-gumi 数据库（.db）",
+                    type=["db"],
+                    key="load_saved_database",
+                    help="导入前会自动为当前数据库建立安全备份。",
+                )
+                load_confirm = st.checkbox(
+                    "我确认加载后会以所选备份替换当前数据",
+                    key="load_saved_database_confirm",
+                )
+                if st.button(
+                    "加载数据",
+                    disabled=uploaded_backup is None or not load_confirm,
+                    use_container_width=True,
+                ):
+                    try:
+                        db.restore_database(uploaded_backup.getvalue())
+                        st.success("数据加载成功；加载前的数据库已自动保存在 backups 文件夹。")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"数据加载失败：{exc}")
+        with right:
+            st.markdown("### 导出数据")
+            st.caption("评分分析、完整迁移与公开分享分别导出，互不混用。")
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            export_top = st.columns(2, gap="small")
+            export_top[0].download_button(
+                "导出全部评分明细 XLSX",
+                _cached_readonly_analysis_xlsx(_live_data_revision()),
+                f"yanggumi_scores_{stamp}.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="owner_analysis_xlsx",
+            )
+            export_top[1].download_button("CSV ZIP", db.export_csv(), f"yanggumi_csv_{stamp}.zip", "application/zip", use_container_width=True)
+            export_bottom = st.columns(2, gap="small")
+            export_bottom[0].download_button("完整 JSON", db.export_json(False), f"yanggumi_full_{stamp}.json", "application/json", use_container_width=True)
+            export_bottom[1].download_button("公开 JSON", db.export_json(True), f"public_data_{stamp}.json", "application/json", use_container_width=True)
+
+    render_section_anchor("data-maintenance")
+    render_section_heading("维护工具", "MAINTENANCE", "执行写入前自动备份")
+    with st.container(key="data_maintenance_panel", border=True):
+        c1, c2, c3 = st.columns(3)
+        if c1.button("运行数据库健康检查", use_container_width=True):
+            st.session_state.health_results = db.health_check()
+        if c2.button("重建标签统计", use_container_width=True):
             try:
-                db.restore_database(uploaded_backup.getvalue())
-                st.success("数据加载成功；加载前的数据库已自动保存在 backups 文件夹。")
-                st.rerun()
-            except Exception as exc:
-                st.error(f"数据加载失败：{exc}")
-    with right:
-        st.subheader("导出")
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        st.download_button(
-            "导出全部评分明细 XLSX",
-            _cached_readonly_analysis_xlsx(_live_data_revision()),
-            f"yanggumi_scores_{stamp}.xlsx",
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-            key="owner_analysis_xlsx",
-        )
-        st.download_button("导出 CSV ZIP", db.export_csv(), f"yanggumi_csv_{stamp}.zip", "application/zip", use_container_width=True)
-        st.download_button("导出完整 JSON", db.export_json(False), f"yanggumi_full_{stamp}.json", "application/json", use_container_width=True)
-        st.download_button("导出 public_data.json", db.export_json(True), f"public_data_{stamp}.json", "application/json", use_container_width=True)
+                db.backup_database(); count = db.rebuild_tag_statistics(); st.success(f"Bangumi 标签关联已重建，共 {count} 条；旧数据未覆盖。")
+            except Exception as exc: st.error(str(exc))
+        auto_count = sum(work.get("score_mode") == "auto" for work in works_snapshot())
+        if c3.button(f"重新计算自动评分（{auto_count}）", use_container_width=True, disabled=auto_count == 0):
+            try:
+                db.backup_database(); changed = db.recalculate_auto_scores(); st.success(f"已重新计算 {changed} 条自动评分；手动评分未覆盖。")
+            except Exception as exc: st.error(str(exc))
+        for result in st.session_state.get("health_results", []):
+            (st.success if result["ok"] else st.warning)(f"{'通过' if result['ok'] else '警告'} · {result['label']} · {result['detail']}")
 
-    st.divider(); st.subheader("维护工具")
-    c1, c2, c3 = st.columns(3)
-    if c1.button("运行数据库健康检查", use_container_width=True):
-        st.session_state.health_results = db.health_check()
-    if c2.button("重建标签统计", use_container_width=True):
-        try:
-            db.backup_database(); count = db.rebuild_tag_statistics(); st.success(f"Bangumi 标签关联已重建，共 {count} 条；旧数据未覆盖。")
-        except Exception as exc: st.error(str(exc))
-    auto_count = sum(work.get("score_mode") == "auto" for work in works_snapshot())
-    if c3.button(f"重新计算自动评分（{auto_count}）", use_container_width=True, disabled=auto_count == 0):
-        try:
-            db.backup_database(); changed = db.recalculate_auto_scores(); st.success(f"已重新计算 {changed} 条自动评分；手动评分未覆盖。")
-        except Exception as exc: st.error(str(exc))
-    for result in st.session_state.get("health_results", []):
-        (st.success if result["ok"] else st.warning)(f"{'通过' if result['ok'] else '警告'} · {result['label']} · {result['detail']}")
-
-    with st.expander("危险操作", expanded=False):
-        orphan_count = db.orphan_tag_count()
-        st.write(f"无关联标签：{orphan_count} 个")
-        clean_confirm = st.checkbox("确认清理无关联标签", key="clean_orphan_confirm")
-        if st.button("清理无用标签", disabled=not clean_confirm or orphan_count == 0):
-            db.backup_database(); st.success(f"已删除 {db.cleanup_orphan_tags()} 个无关联标签。")
-        candidates = db.test_work_candidates()
-        options = {f"#{item['id']} · {item['title']}": item["id"] for item in candidates}
-        selected = st.multiselect("选择测试数据", list(options))
-        delete_confirm = st.checkbox("确认删除所选测试数据", key="test_delete_confirm")
-        if st.button("清除所选测试数据", disabled=not(selected and delete_confirm)):
-            db.backup_database(); count = db.delete_selected_works([options[label] for label in selected]); st.success(f"已删除 {count} 条测试数据。")
-        syncable = [work for work in works_snapshot() if work.get("bangumi_id")]
-        st.write(f"可重新同步 Bangumi：{len(syncable)} 条（只更新 Bangumi 字段）")
-        sync_phrase = st.text_input("输入 SYNC BANGUMI 后执行", key="sync_all_phrase")
-        if st.button("重新同步全部 Bangumi 数据", disabled=sync_phrase != "SYNC BANGUMI"):
-            db.backup_database(); updated = 0; failures = []
-            progress = st.progress(0)
-            for index, work in enumerate(syncable, 1):
-                try:
-                    detail = bgm.get_subject(int(work["bangumi_id"])); db.cache_subject(int(work["bangumi_id"]), detail)
-                    db.update_bangumi(int(work["id"]), bgm.binding_fields(detail, work.get("title") or "", work.get("original_title") or ""), include_local_titles=False); updated += 1
-                except Exception as exc: failures.append(f"{work['title']}：{exc}")
-                progress.progress(index / max(1, len(syncable)))
-            st.success(f"已同步 {updated} 条；个人字段未覆盖。")
-            if failures: st.warning("\n".join(failures[:10]))
+        with st.expander("危险操作", expanded=False):
+            orphan_count = db.orphan_tag_count()
+            st.write(f"无关联标签：{orphan_count} 个")
+            clean_confirm = st.checkbox("确认清理无关联标签", key="clean_orphan_confirm")
+            if st.button("清理无用标签", disabled=not clean_confirm or orphan_count == 0):
+                db.backup_database(); st.success(f"已删除 {db.cleanup_orphan_tags()} 个无关联标签。")
+            candidates = db.test_work_candidates()
+            options = {f"#{item['id']} · {item['title']}": item["id"] for item in candidates}
+            selected = st.multiselect("选择测试数据", list(options))
+            delete_confirm = st.checkbox("确认删除所选测试数据", key="test_delete_confirm")
+            if st.button("清除所选测试数据", disabled=not(selected and delete_confirm)):
+                db.backup_database(); count = db.delete_selected_works([options[label] for label in selected]); st.success(f"已删除 {count} 条测试数据。")
+            syncable = [work for work in works_snapshot() if work.get("bangumi_id")]
+            st.write(f"可重新同步 Bangumi：{len(syncable)} 条（只更新 Bangumi 字段）")
+            sync_phrase = st.text_input("输入 SYNC BANGUMI 后执行", key="sync_all_phrase")
+            if st.button("重新同步全部 Bangumi 数据", disabled=sync_phrase != "SYNC BANGUMI"):
+                db.backup_database(); updated = 0; failures = []
+                progress = st.progress(0)
+                for index, work in enumerate(syncable, 1):
+                    try:
+                        detail = bgm.get_subject(int(work["bangumi_id"])); db.cache_subject(int(work["bangumi_id"]), detail)
+                        db.update_bangumi(int(work["id"]), bgm.binding_fields(detail, work.get("title") or "", work.get("original_title") or ""), include_local_titles=False); updated += 1
+                    except Exception as exc: failures.append(f"{work['title']}：{exc}")
+                    progress.progress(index / max(1, len(syncable)))
+                st.success(f"已同步 {updated} 条；个人字段未覆盖。")
+                if failures: st.warning("\n".join(failures[:10]))
+    render_section_anchor("data-appearance")
     appearance_settings_panel()
 
 
@@ -3370,9 +4201,19 @@ PAGES={"首页":page_home,"条目库":page_library,"新增条目":page_add,"Bang
 NAV_ICONS={"首页":"✦","条目库":"▦","新增条目":"＋","Bangumi":"◎","排行榜":"♛","评分对比":"≋","标签筛选":"#","评分设置":"⚙","数据管理":"⚙"}
 if st.session_state.get("nav_page") == "Bangumi 匹配": st.session_state.nav_page = "Bangumi"
 if st.session_state.get("nav_page") == "分类型榜单": st.session_state.nav_page = "排行榜"
-if "nav_page" not in st.session_state: st.session_state.nav_page="首页"
+allowed_routes = set(READ_ONLY_NAV_PAGES if READ_ONLY_MODE else ROUTABLE_PAGES)
+requested_view = str(st.query_params.get("view") or "").strip()
+last_url_view = str(st.session_state.get("_last_url_view") or "").strip()
+if requested_view in allowed_routes and requested_view != last_url_view:
+    st.session_state.nav_page = requested_view
+elif "nav_page" not in st.session_state:
+    st.session_state.nav_page = requested_view if requested_view in allowed_routes else "首页"
 if READ_ONLY_MODE and st.session_state.nav_page not in {*READ_ONLY_NAV_PAGES, "标签作品", "条目详情"}:
     st.session_state.nav_page = "首页"
+if st.session_state.nav_page in allowed_routes:
+    if requested_view != st.session_state.nav_page:
+        st.query_params["view"] = st.session_state.nav_page
+    st.session_state._last_url_view = st.session_state.nav_page
 
 
 with st.sidebar:
@@ -3401,4 +4242,5 @@ with st.sidebar:
     """,unsafe_allow_html=True)
 top_nav_page = "标签筛选" if st.session_state.nav_page == "标签作品" else st.session_state.nav_page
 render_top_nav(top_nav_page, visible, readonly=READ_ONLY_MODE)
+_install_page_accessibility(st.session_state.nav_page)
 render_page_safely(st.session_state.nav_page)

@@ -1,7 +1,12 @@
+[global]
+developmentMode = false
+
 [server]
 port = 8501
 headless = true
 enableStaticServing = true
+enableWebsocketCompression = true
+fileWatcherType = "none"
 
 [browser]
 gatherUsageStats = false

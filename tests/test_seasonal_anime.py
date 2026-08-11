@@ -25,16 +25,32 @@ def subject(subject_id: int = 101) -> dict:
 class SeasonalAnimeTest(unittest.TestCase):
     def setUp(self):
         self.original_paths = db.DATA_DIR, db.DB_PATH, db.EXPORT_DIR
-        self.original_source_path = seasonal.SEASONAL_SOURCE_PATH
+        self.original_refresh_paths = (
+            seasonal.SEASONAL_SOURCE_PATH,
+            seasonal.MISSING_COVER_REFRESH_PATH,
+            seasonal.RATING_PRECISION_REFRESH_PATH,
+            seasonal.SAVED_PUBLIC_REFRESH_PATH,
+            seasonal.PUBLIC_DATA_REFRESH_PATH,
+        )
         self.temp = tempfile.TemporaryDirectory()
         root = Path(self.temp.name)
         db.DATA_DIR, db.DB_PATH, db.EXPORT_DIR = root, root / "acgn.db", root / "exports"
         seasonal.SEASONAL_SOURCE_PATH = root / "seasonal_title_sources.json"
+        seasonal.MISSING_COVER_REFRESH_PATH = root / "missing_cover_refresh.json"
+        seasonal.RATING_PRECISION_REFRESH_PATH = root / "rating_precision_refresh.json"
+        seasonal.SAVED_PUBLIC_REFRESH_PATH = root / "saved_bangumi_refresh.json"
+        seasonal.PUBLIC_DATA_REFRESH_PATH = root / "public_data_refresh.json"
         db.init_db()
 
     def tearDown(self):
         db.DATA_DIR, db.DB_PATH, db.EXPORT_DIR = self.original_paths
-        seasonal.SEASONAL_SOURCE_PATH = self.original_source_path
+        (
+            seasonal.SEASONAL_SOURCE_PATH,
+            seasonal.MISSING_COVER_REFRESH_PATH,
+            seasonal.RATING_PRECISION_REFRESH_PATH,
+            seasonal.SAVED_PUBLIC_REFRESH_PATH,
+            seasonal.PUBLIC_DATA_REFRESH_PATH,
+        ) = self.original_refresh_paths
         self.temp.cleanup()
 
     def test_quarter_boundaries(self):
@@ -88,6 +104,26 @@ class SeasonalAnimeTest(unittest.TestCase):
         cached_movie = {**seasonal._candidate(movie), "season_year": 2026, "season_code": "Q3"}
         self.assertFalse(seasonal.is_tv_seasonal_anime(cached_movie))
         self.assertFalse(seasonal.is_homepage_seasonal_anime(cached_movie))
+
+    def test_seasonal_cache_uses_real_two_decimal_perspective_score(self):
+        item = seasonal._candidate(subject(701))
+        db.upsert_seasonal_anime([item], 2026, "Q2", "4月番")
+        (db.DATA_DIR / "bangumi_rating_precision.json").write_text(json.dumps({
+            "version": 1,
+            "items": {
+                "701": {
+                    "score": 8.17,
+                    "votes": 4876,
+                    "date": datetime.now().date().isoformat(),
+                },
+            },
+        }, ensure_ascii=False), encoding="utf-8")
+
+        cached = db.list_seasonal_anime(2026, "Q2", include_unconfirmed=True)[0]
+
+        self.assertEqual(cached["bangumi_score"], 8.17)
+        self.assertEqual(cached["bangumi_total_votes"], 4876)
+        self.assertEqual(cached["precision_source"], "bangumi-rating-perspective")
 
     def test_bgm_calendar_parser_reads_subject_ids_and_weekdays(self):
         page = """
@@ -379,14 +415,85 @@ class SeasonalAnimeTest(unittest.TestCase):
             with patch("seasonal_service.threading.Thread") as thread:
                 seasonal.start_midnight_refresh_scheduler()
             targets = [call.kwargs.get("target") for call in thread.call_args_list]
-            self.assertIn(seasonal._current_season_catchup, targets)
-            self.assertEqual(thread.return_value.start.call_count, 4)
+            self.assertIn(seasonal._public_data_catchup, targets)
+            self.assertIn(seasonal._midnight_refresh_scheduler, targets)
+            self.assertEqual(thread.return_value.start.call_count, 2)
         finally:
             seasonal._scheduler_started = original_started
 
     def test_background_season_catchup_does_not_escape_network_errors(self):
         with patch("seasonal_service.refresh_current_season_if_due", side_effect=RuntimeError("offline")):
             seasonal._current_season_catchup()
+
+    def test_saved_public_refresh_preserves_every_personal_field_and_manual_tag(self):
+        item = seasonal._candidate(subject())
+        db.upsert_seasonal_anime([item], 2026, "Q2", "4月番")
+        cache = db.list_seasonal_anime(2026, "Q2")[0]
+        work_id, _ = seasonal.set_candidate_status(cache["id"], "在看")
+        current = db.get_work(work_id)
+        db.save_work({
+            **current,
+            "status": "已看",
+            "score_total": 8.88,
+            "short_review": "保留短评",
+            "cover_path": "private-art.webp",
+            "start_date": "2026-04-03",
+            "finish_date": "2026-06-20",
+        }, tags=[("私人标签", "自定义")], work_id=work_id)
+        updated_subject = subject()
+        updated_subject["rating"] = {"score": 8.2, "rank": 90, "total": 5000}
+        updated_subject["summary"] = "新的公开简介"
+        with patch("seasonal_service.bgm.get_subject", return_value=updated_subject):
+            count = seasonal.refresh_saved_bangumi_public_fields(datetime(2026, 8, 9), max_workers=1)
+        saved = db.get_work(work_id)
+        self.assertEqual(count, 1)
+        self.assertEqual(saved["status"], "已看")
+        self.assertEqual(saved["score_total"], 8.88)
+        self.assertEqual(saved["short_review"], "保留短评")
+        self.assertEqual(saved["cover_path"], "private-art.webp")
+        self.assertEqual(saved["start_date"], "2026-04-03")
+        self.assertEqual(saved["finish_date"], "2026-06-20")
+        self.assertIn("私人标签", [tag["name"] for tag in saved["tags"]])
+        self.assertEqual(saved["bangumi_summary"], "新的公开简介")
+
+    def test_unified_daily_refresh_runs_every_public_component_once(self):
+        with patch("seasonal_service._season_refresh_result", return_value={"changed": True, "count": 70}) as season, patch(
+            "seasonal_service._archive_refresh_result", return_value={"changed": True, "count": 100}
+        ) as archive, patch(
+            "seasonal_service._saved_public_refresh_result", return_value={"changed": True, "count": 2}
+        ) as saved, patch(
+            "seasonal_service.refresh_missing_anime_covers_if_due", return_value=(True, 3)
+        ) as covers, patch(
+            "seasonal_service._ranking_refresh_result", return_value={"changed": True, "count": 10}
+        ) as ranking, patch(
+            "seasonal_service.refresh_precise_anime_ratings_if_due", return_value=(True, 4)
+        ) as precise:
+            changed, status = seasonal.refresh_public_data_if_due(datetime(2026, 8, 9, 0, 0, 1))
+        self.assertTrue(changed)
+        self.assertEqual(status["status"], "success")
+        self.assertEqual(status["scheduled_for"], "2026-08-09T00:00:00")
+        self.assertEqual(status["personal_data_policy"], "excluded")
+        for mocked in (season, archive, saved, covers, ranking, precise):
+            mocked.assert_called_once()
+
+    def test_one_failed_public_component_does_not_block_the_remaining_refreshes(self):
+        with patch("seasonal_service._season_refresh_result", side_effect=RuntimeError("calendar offline")), patch(
+            "seasonal_service._archive_refresh_result", return_value={"changed": False, "count": 100}
+        ) as archive, patch(
+            "seasonal_service._saved_public_refresh_result", return_value={"changed": True, "count": 2}
+        ) as saved, patch(
+            "seasonal_service.refresh_missing_anime_covers_if_due", return_value=(False, 0)
+        ) as covers, patch(
+            "seasonal_service._ranking_refresh_result", return_value={"changed": True, "count": 10}
+        ) as ranking, patch(
+            "seasonal_service.refresh_precise_anime_ratings_if_due", return_value=(True, 4)
+        ) as precise:
+            changed, status = seasonal.refresh_public_data_if_due(datetime(2026, 8, 9, 0, 0, 1))
+        self.assertTrue(changed)
+        self.assertEqual(status["status"], "partial")
+        self.assertEqual(status["components"]["current_season"]["status"], "error")
+        for mocked in (archive, saved, covers, ranking, precise):
+            mocked.assert_called_once()
 
     def test_quarter_opening_refreshes_even_after_previous_quarter_sync(self):
         now = datetime(2026, 7, 1, 0, 0, 1)

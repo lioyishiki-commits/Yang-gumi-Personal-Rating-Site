@@ -44,7 +44,7 @@ class UiSystemTest(unittest.TestCase):
         )
 
     def test_score_precision_is_consistent_across_every_work_card(self) -> None:
-        self.assertEqual(components.fmt_work_score({"score_total": 8.2, "score_mode": "manual"}), "8.2")
+        self.assertEqual(components.fmt_work_score({"score_total": 8.2, "score_mode": "manual"}), "8.20")
         self.assertEqual(components.fmt_work_score({"score_total": 8.2, "score_mode": "auto"}), "8.20")
         self.assertEqual(components.fmt_work_score({"score_total": 8.2}), "8.20")
         self.assertEqual(components.fmt_score(8.2), "8.20")
@@ -112,13 +112,19 @@ class UiSystemTest(unittest.TestCase):
         self.assertIn("animation:none!important", css)
         self.assertIn("prefers-reduced-motion", css)
 
-    def test_compare_overview_and_pin_button_have_compact_responsive_styles(self) -> None:
+    def test_compare_overview_and_period_average_use_flat_connected_styles(self) -> None:
         config = copy.deepcopy(settings.DEFAULT_SETTINGS)
         with patch.object(components.st, "markdown") as markdown:
             components.inject_css(config)
         css = markdown.call_args.args[0]
         self.assertIn(".yg-compare-overview", css)
         self.assertIn("grid-template-columns:repeat(4,minmax(0,1fr))", css)
+        overview_rule = next(rule for rule in css.split("}") if ".yg-compare-overview {" in rule)
+        self.assertIn("border-top:1px solid", overview_rule)
+        self.assertIn("background:transparent", overview_rule)
+        self.assertNotIn("border-radius", overview_rule)
+        self.assertIn(".yg-period-average-result", css)
+        self.assertIn('[class*="st-key-library_period_average"]::before', css)
         self.assertIn('[class*="st-key-search_default_pin_"]', css)
 
     def test_dimension_poster_and_rank_share_the_same_center_axis(self) -> None:

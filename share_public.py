@@ -22,6 +22,7 @@ import time
 import urllib.error
 import urllib.request
 import webbrowser
+from websockets.sync.client import connect as proxy_aware_websocket_connect
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import IO, Any
@@ -62,12 +63,13 @@ PORT_ATTEMPTS = 20
 PORT = PREFERRED_PORT
 MAX_RECONNECTS = 3
 PUBLIC_HEALTH_INTERVAL_SECONDS = 20.0
-PUBLIC_HEALTH_DEGRADED_AFTER = 3
+PUBLIC_HEALTH_DEGRADED_AFTER = 1
 PUBLIC_HEALTH_RECYCLE_AFTER = 3
 LOCATOR_RETRY_SECONDS = 60.0
 LOCATOR_REFRESH_SECONDS = 600.0
 LOCATOR_API_URL = "https://jsonblob.com/api/jsonBlob"
-LOCATOR_ATTEMPTS = 3
+LOCATOR_ATTEMPTS = 1
+LOCATOR_REQUEST_TIMEOUT_SECONDS = 2.5
 STALE_TUNNEL_RECYCLE_PROVIDERS = {
     "PlainTunnel",
     "Wormhole",
@@ -469,7 +471,9 @@ def _close_websocket_cleanly(connection: socket.socket | ssl.SSLSocket) -> None:
         pass
 
 
-def public_streamlit_websocket_ready(base_url: str, timeout: float = 5.0, token: str = "") -> bool:
+def _public_streamlit_websocket_ready_direct(
+    base_url: str, timeout: float = 5.0, token: str = "",
+) -> bool:
     """Perform a real RFC 6455 upgrade against Streamlit's session endpoint."""
     parsed = urlsplit(base_url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
@@ -545,6 +549,41 @@ def public_streamlit_websocket_ready(base_url: str, timeout: float = 5.0, token:
                 connection.close()
             except OSError:
                 pass
+
+
+def public_streamlit_websocket_ready(base_url: str, timeout: float = 5.0, token: str = "") -> bool:
+    """Verify Streamlit WebSocket through the same system proxy path as browsers."""
+    parsed = urlsplit(base_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return False
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    host = parsed.hostname if port in {80, 443} else f"{parsed.hostname}:{port}"
+    scheme = "wss" if parsed.scheme == "https" else "ws"
+    base_path = parsed.path.rstrip("/")
+    websocket_url = f"{scheme}://{host}{base_path}/_stcore/stream"
+    origin = f"{parsed.scheme}://{host}"
+    offer_streamlit_protocol = not parsed.hostname.lower().endswith(
+        (".plaintunnel.com", ".wormhole.bar", ".runlocal.eu")
+    )
+    headers = {"User-Agent": "Mozilla/5.0 Yang-gumi-share-health/1.0"}
+    if token:
+        headers["Cookie"] = f"{SHARE_COOKIE_NAME}={session_cookie_value(token)}"
+    if parsed.hostname.lower().endswith(".serveousercontent.com"):
+        headers["serveo-skip-browser-warning"] = "true"
+    try:
+        with proxy_aware_websocket_connect(
+            websocket_url,
+            origin=origin,
+            subprotocols=["streamlit"] if offer_streamlit_protocol else None,
+            additional_headers=headers,
+            open_timeout=timeout,
+            close_timeout=.5,
+        ) as connection:
+            return not offer_streamlit_protocol or connection.subprotocol == "streamlit"
+    except Exception:
+        # Direct sockets remain useful on machines without a configured proxy
+        # and for legacy tunnel endpoints with unusual DNS routing.
+        return _public_streamlit_websocket_ready_direct(base_url, timeout, token)
 
 
 def wait_for_public_streamlit(
@@ -658,7 +697,7 @@ def _locator_request(
     *,
     method: str,
     payload: dict[str, Any] | None = None,
-    timeout: float = 10.0,
+    timeout: float = LOCATOR_REQUEST_TIMEOUT_SECONDS,
 ) -> tuple[int, dict[str, str], dict[str, Any]]:
     data = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(
@@ -1091,6 +1130,7 @@ def start_tunnel(
             f"http://127.0.0.1:{port}",
             "--subdomain",
             plain_tunnel_subdomain(),
+            "--exit-on-disconnect",
         ]
         try:
             process, url = _start_tunnel_process(
@@ -1559,11 +1599,6 @@ def run_share(managed: bool = False) -> None:
         last_public_health_check = time.monotonic()
         public_health_failures = 0
         while not _stop_requested():
-            if time.monotonic() >= next_locator_sync:
-                _locator_url, locator_synced = sync_public_locator(final_url)
-                next_locator_sync = time.monotonic() + (
-                    LOCATOR_REFRESH_SECONDS if locator_synced else LOCATOR_RETRY_SECONDS
-                )
             if proxy.poll() is not None:
                 raise RuntimeError("本地只读安全代理意外停止，公网链接已经失效。")
             if owned_streamlit is not None and owned_streamlit.poll() is not None:
@@ -1618,6 +1653,11 @@ def run_share(managed: bool = False) -> None:
                             last_error=f"连续 {public_health_failures} 次公网探测失败，已自动回收失效端点",
                         )
                         _terminate(tunnel)
+                if time.monotonic() >= next_locator_sync:
+                    _locator_url, locator_synced = sync_public_locator(final_url)
+                    next_locator_sync = time.monotonic() + (
+                        LOCATOR_REFRESH_SECONDS if locator_synced else LOCATOR_RETRY_SECONDS
+                    )
                 time.sleep(0.5)
                 continue
             LOGGER.warning(

@@ -11,6 +11,11 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
 SETTINGS_PATH = DATA_DIR / "scoring_settings.json"
+TYPE_SETTINGS_PATHS = {
+    "漫画": DATA_DIR / "scoring_settings_manga.json",
+    "轻小说": DATA_DIR / "scoring_settings_light_novel.json",
+    "游戏": DATA_DIR / "scoring_settings_game.json",
+}
 
 FIELD_LABELS = {
     "score_story": "剧情",
@@ -20,7 +25,7 @@ FIELD_LABELS = {
     "score_music": "音乐 / 配音",
     "score_pacing": "节奏",
     "score_personal": "个人偏爱",
-    "rewatch_value": "重看 / 重玩价值",
+    "rewatch_value": "重看价值",
     "score_aftertaste": "情绪后劲",
     "score_uniqueness": "独特性",
     "score_atmosphere": "氛围感",
@@ -71,6 +76,13 @@ BONUS_SCORE_WEIGHTS = copy.deepcopy(DEFAULT_SCORE_CONFIG["feeling"]["weights"])
 SPECIAL_SCORE_WEIGHTS = copy.deepcopy(DEFAULT_SCORE_CONFIG["era"]["weights"])
 COMPONENT_SCORE_FIELDS = tuple(MAIN_SCORE_WEIGHTS) + tuple(BONUS_SCORE_WEIGHTS) + tuple(SPECIAL_SCORE_WEIGHTS)
 SPECIAL_VOTE_THRESHOLD = 3000
+SPECIAL_VOTE_THRESHOLDS = {
+    "动画": 3000,
+    "漫画": 300,
+    "轻小说": 300,
+    "小说": 300,
+    "游戏": 1000,
+}
 BONUS_SCORE_CAP = float(DEFAULT_SCORE_CONFIG["feeling"]["cap"])
 SPECIAL_SCORE_CAP = float(DEFAULT_SCORE_CONFIG["era"]["cap"])
 IMBALANCE_PENALTY_FIELD = "score_imbalance_penalty"
@@ -97,6 +109,104 @@ def _positive(value: Any, fallback: float) -> float:
 
 def default_score_config() -> dict[str, dict[str, Any]]:
     return copy.deepcopy(DEFAULT_SCORE_CONFIG)
+
+
+def _score_category(work_type: Any = None) -> str:
+    category = str(work_type or "动画").strip() or "动画"
+    return "轻小说" if category == "小说" else category
+
+
+def _fixed_category_score_configs() -> dict[str, dict[str, dict[str, Any]]]:
+    """Return the approved fixed presets for non-animation categories."""
+    shared_feeling = {
+        "cap": 0.75,
+        "weights": {
+            "score_personal": 0.40,
+            "rewatch_value": 0.20,
+            "score_aftertaste": 0.20,
+            "score_uniqueness": 0.10,
+            "score_atmosphere": 0.10,
+        },
+    }
+    shared_era = {
+        "cap": 0.75,
+        "weights": {
+            "score_influence": 0.60,
+            "score_originality": 0.40,
+        },
+    }
+    return {
+        "漫画": {
+            "body": {
+                "cap": 8.5,
+                "weights": {
+                    "score_story": 0.40,
+                    "score_character": 0.20,
+                    "score_art": 0.20,
+                    "score_direction": 0.10,
+                    "score_pacing": 0.10,
+                },
+                "labels": {
+                    "score_story": "剧情",
+                    "score_character": "角色塑造",
+                    "score_art": "画工",
+                    "score_direction": "演出 / 分镜",
+                    "score_pacing": "节奏",
+                },
+            },
+            "feeling": copy.deepcopy(shared_feeling),
+            "era": copy.deepcopy(shared_era),
+        },
+        "轻小说": {
+            "body": {
+                "cap": 8.5,
+                "weights": {
+                    "score_story": 0.40,
+                    "score_character": 0.20,
+                    "custom_writing": 0.30,
+                    "score_pacing": 0.10,
+                },
+                "labels": {
+                    "score_story": "剧情",
+                    "score_character": "角色塑造",
+                    "custom_writing": "文笔",
+                    "score_pacing": "节奏",
+                },
+            },
+            "feeling": copy.deepcopy(shared_feeling),
+            "era": copy.deepcopy(shared_era),
+        },
+        "游戏": {
+            "body": {
+                "cap": 8.5,
+                "weights": {
+                    "score_story": 0.40,
+                    "score_character": 0.15,
+                    "score_art": 0.15,
+                    "score_pacing": 0.10,
+                    "custom_gameplay_design": 0.20,
+                },
+                "labels": {
+                    "score_story": "剧情",
+                    "score_character": "角色塑造",
+                    "score_art": "美术设计",
+                    "score_pacing": "节奏",
+                    "custom_gameplay_design": "玩法 / 关卡设计",
+                },
+            },
+            "feeling": {
+                **copy.deepcopy(shared_feeling),
+                "labels": {
+                    "score_personal": "个人偏爱",
+                    "rewatch_value": "重玩价值",
+                    "score_aftertaste": "情绪后劲",
+                    "score_uniqueness": "独特性",
+                    "score_atmosphere": "氛围感",
+                },
+            },
+            "era": copy.deepcopy(shared_era),
+        },
+    }
 
 
 def _clean_label(value: Any, fallback: str) -> str:
@@ -145,27 +255,78 @@ def _merge_score_config(current: Any) -> dict[str, dict[str, Any]]:
     return merged
 
 
-def load_score_config() -> dict[str, dict[str, Any]]:
+def default_score_config_for_type(work_type: Any = None) -> dict[str, dict[str, Any]]:
+    category = _score_category(work_type)
+    fixed = _fixed_category_score_configs().get(category)
+    return _merge_score_config(fixed) if fixed is not None else default_score_config()
+
+
+def score_settings_path(work_type: Any = None) -> Path:
+    category = _score_category(work_type)
+    return SETTINGS_PATH if category == "动画" else TYPE_SETTINGS_PATHS.get(category, SETTINGS_PATH)
+
+
+def load_score_config(work_type: Any = None) -> dict[str, dict[str, Any]]:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    if not SETTINGS_PATH.exists():
-        return save_score_config(default_score_config())
+    category = _score_category(work_type)
+    path = score_settings_path(category)
+    default = default_score_config_for_type(category)
+    if not path.exists():
+        if category == "动画":
+            return save_score_config(default, category)
+        return default
     try:
-        return _merge_score_config(json.loads(SETTINGS_PATH.read_text(encoding="utf-8")))
+        return _merge_score_config(json.loads(path.read_text(encoding="utf-8")))
     except (OSError, ValueError, json.JSONDecodeError):
-        return save_score_config(default_score_config())
+        return save_score_config(default, category)
 
 
-def save_score_config(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
+def score_config_for_type(
+    work_type: Any,
+    animation_config: dict[str, Any] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Resolve the independently configurable scoring rules for one category."""
+    category = _score_category(work_type)
+    active = _merge_score_config(
+        animation_config if category == "动画" and animation_config is not None
+        else load_score_config(category)
+    )
+    for group in active.values():
+        labels = group.setdefault("labels", {})
+        if "rewatch_value" in group.get("weights", {}):
+            labels.setdefault("rewatch_value", "重看价值")
+    return active
+
+
+def score_config_for_work(
+    data: dict[str, Any] | None,
+    config: dict[str, Any] | None = None,
+) -> dict[str, dict[str, Any]]:
+    if config is not None:
+        return _merge_score_config(config)
+    return score_config_for_type((data or {}).get("type"))
+
+
+def special_vote_threshold(work_type: Any = None) -> int:
+    category = "轻小说" if str(work_type or "").strip() == "小说" else str(work_type or "").strip()
+    return int(SPECIAL_VOTE_THRESHOLDS.get(category, SPECIAL_VOTE_THRESHOLD))
+
+
+def save_score_config(
+    config: dict[str, Any], work_type: Any = None,
+) -> dict[str, dict[str, Any]]:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     clean = _merge_score_config(config)
-    temp = SETTINGS_PATH.with_suffix(".tmp")
+    path = score_settings_path(work_type)
+    temp = path.with_suffix(".tmp")
     temp.write_text(json.dumps(clean, ensure_ascii=False, indent=2), encoding="utf-8")
-    temp.replace(SETTINGS_PATH)
+    temp.replace(path)
     return clean
 
 
-def reset_score_config() -> dict[str, dict[str, Any]]:
-    return save_score_config(default_score_config())
+def reset_score_config(work_type: Any = None) -> dict[str, dict[str, Any]]:
+    category = _score_category(work_type)
+    return save_score_config(default_score_config_for_type(category), category)
 
 
 def score_weights(group_key: str, config: dict[str, Any] | None = None) -> dict[str, float]:
@@ -238,22 +399,27 @@ def _normalized_weighted_score(data: dict[str, Any], weights: dict[str, float]) 
     return sum(value * weights[field] for field, value in active.items()) / active_weight
 
 
-def should_show_special_scores(bangumi_total_votes: Any) -> bool:
+def should_show_special_scores(bangumi_total_votes: Any, work_type: Any = None) -> bool:
     try:
-        return int(bangumi_total_votes) > SPECIAL_VOTE_THRESHOLD
+        votes = int(bangumi_total_votes)
     except (TypeError, ValueError):
         return False
+    category = "轻小说" if str(work_type or "").strip() == "小说" else str(work_type or "").strip()
+    threshold = special_vote_threshold(category)
+    return votes > threshold if category in {"", "动画"} else votes >= threshold
 
 
 def calculate_main_score(data: dict[str, Any], config: dict[str, Any] | None = None) -> float | None:
-    score = _normalized_weighted_score(data, score_weights("body", config))
-    cap = score_cap("body", config)
+    active = score_config_for_work(data, config)
+    score = _normalized_weighted_score(data, score_weights("body", active))
+    cap = score_cap("body", active)
     return None if score is None else round(score / 10.0 * cap, 4)
 
 
 def calculate_bonus_score(data: dict[str, Any], config: dict[str, Any] | None = None) -> float:
-    score = _normalized_weighted_score(data, score_weights("feeling", config))
-    cap = score_cap("feeling", config)
+    active = score_config_for_work(data, config)
+    score = _normalized_weighted_score(data, score_weights("feeling", active))
+    cap = score_cap("feeling", active)
     return 0.0 if score is None else round(score / 10.0 * cap, 4)
 
 
@@ -262,19 +428,21 @@ def calculate_special_score(
     bangumi_total_votes: Any,
     config: dict[str, Any] | None = None,
 ) -> float | None:
-    if not should_show_special_scores(bangumi_total_votes):
+    active = score_config_for_work(data, config)
+    if not should_show_special_scores(bangumi_total_votes, data.get("type")):
         return None
-    weights = score_weights("era", config)
+    weights = score_weights("era", active)
     filled = {field: value for field in weights if (value := _number(_field_value(data, field))) is not None}
     if not filled:
         return None
-    cap = score_cap("era", config)
+    cap = score_cap("era", active)
     score = cap * sum(value / 10.0 * weights[field] for field, value in filled.items())
     return round(score, 4)
 
 
 def calculate_main_score_gap(data: dict[str, Any], config: dict[str, Any] | None = None) -> float | None:
-    values = [_number(_field_value(data, field)) for field in score_weights("body", config)]
+    active = score_config_for_work(data, config)
+    values = [_number(_field_value(data, field)) for field in score_weights("body", active)]
     filled = [value for value in values if value is not None]
     if len(filled) < 2:
         return None

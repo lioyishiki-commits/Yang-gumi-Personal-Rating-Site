@@ -72,6 +72,39 @@ class ScoringAndLauncherTest(unittest.TestCase):
         self.assertLessEqual(scoring.calculate_bonus_score(values), 0.7)
         self.assertLessEqual(scoring.calculate_special_score(values, 3001) or 0, 0.3)
 
+    def test_manga_novel_and_game_use_their_approved_fixed_formulas(self):
+        manga = scoring.score_config_for_type("漫画")
+        self.assertEqual(manga["body"]["cap"], 8.5)
+        self.assertEqual(manga["body"]["weights"], {
+            "score_story": 0.40, "score_character": 0.20, "score_art": 0.20,
+            "score_direction": 0.10, "score_pacing": 0.10,
+        })
+        self.assertEqual(manga["body"]["labels"]["score_art"], "画工")
+        self.assertEqual(manga["body"]["labels"]["score_direction"], "演出 / 分镜")
+
+        novel = scoring.score_config_for_type("轻小说")
+        self.assertEqual(novel["body"]["weights"]["custom_writing"], 0.30)
+        self.assertEqual(novel["body"]["labels"]["custom_writing"], "文笔")
+
+        game = scoring.score_config_for_type("游戏")
+        self.assertEqual(game["body"]["weights"]["custom_gameplay_design"], 0.20)
+        self.assertEqual(game["body"]["labels"]["score_art"], "美术设计")
+        self.assertEqual(game["feeling"]["labels"]["rewatch_value"], "重玩价值")
+        self.assertEqual(scoring.score_config_for_type("动画")["feeling"]["labels"]["rewatch_value"], "重看价值")
+
+        for work_type, threshold in (("漫画", 300), ("轻小说", 300), ("游戏", 1000)):
+            with self.subTest(work_type=work_type):
+                config = scoring.score_config_for_type(work_type)
+                values = {
+                    "type": work_type,
+                    **{field: 10.0 for field in scoring.all_component_fields(config)},
+                }
+                self.assertFalse(scoring.should_show_special_scores(threshold - 1, work_type))
+                self.assertTrue(scoring.should_show_special_scores(threshold, work_type))
+                self.assertEqual(scoring.calculate_total_score(values, threshold), 10.0)
+        self.assertFalse(scoring.should_show_special_scores(3000, "动画"))
+        self.assertTrue(scoring.should_show_special_scores(3001, "动画"))
+
     def test_step12_requested_score_breakdown(self):
         values = {
             "score_story": 9.5, "score_character": 8.5, "score_art": 7.0,

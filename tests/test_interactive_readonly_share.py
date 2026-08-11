@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -10,9 +11,9 @@ from streamlit.testing.v1 import AppTest
 
 class InteractiveReadOnlyShareTest(unittest.TestCase):
     PAGES = (
-        "首页", "条目库", "排行榜", "评分对比", "标签筛选", "评分设置",
+        "首页", "条目库", "Bangumi", "排行榜", "评分对比", "标签筛选", "评分设置", "数据管理",
     )
-    PRIVATE_PAGES = ("新增条目", "Bangumi", "数据管理")
+    PRIVATE_PAGES = ("新增条目",)
 
     def open_readonly_app(self) -> AppTest:
         environment = {
@@ -30,7 +31,7 @@ class InteractiveReadOnlyShareTest(unittest.TestCase):
         self.assertIn("exec(compile(", launcher)
         self.assertNotIn("\nimport app", launcher)
 
-    def test_readonly_navigation_exposes_only_the_six_approved_pages(self):
+    def test_readonly_navigation_matches_main_except_add_page(self):
         app = self.open_readonly_app()
         navigation_keys = [
             button.key for button in app.button
@@ -39,6 +40,27 @@ class InteractiveReadOnlyShareTest(unittest.TestCase):
         self.assertEqual(navigation_keys, [f"sidebar_nav_{page}" for page in self.PAGES])
         for page in self.PRIVATE_PAGES:
             self.assertNotIn(f"sidebar_nav_{page}", navigation_keys)
+
+    def test_time_average_is_disabled_by_default_and_keeps_full_library_scope(self):
+        app = self.open_readonly_app()
+        with mock.patch.dict(
+            os.environ,
+            {"YANGGUMI_READ_ONLY": "1", "YANGGUMI_SHARE_TOKEN": ""},
+            clear=False,
+        ):
+            next(
+                button for button in app.button
+                if button.key == "sidebar_nav_条目库"
+            ).click().run()
+        self.assertEqual(list(app.exception), [])
+        toggle = next(widget for widget in app.toggle if widget.key == "library_period_average_enabled")
+        self.assertFalse(toggle.value)
+        self.assertNotIn("年份", {widget.label for widget in app.selectbox})
+        captions = [str(element.value) for element in app.caption]
+        self.assertTrue(any(
+            re.search(r"当前查询结果：(\d+) / \1 个条目", caption)
+            for caption in captions
+        ))
 
     def test_each_public_page_remains_interactive(self):
         app = self.open_readonly_app()

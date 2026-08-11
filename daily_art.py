@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import random
 import shutil
 import subprocess
@@ -21,14 +20,8 @@ SETTINGS_PATH = ROOT / "data" / "daily_art_settings.json"
 ASSET_DIR = ROOT / "static" / "daily_art"
 MANIFEST_VERSION = 10
 DEFAULT_LOCAL_ROOTS = {
-    "portrait": Path(
-        os.getenv("YANGGUMI_PORTRAIT_DIR")
-        or Path.home() / "Pictures" / "Yang-gumi" / "Portrait"
-    ),
-    "wallpaper": Path(
-        os.getenv("YANGGUMI_WALLPAPER_DIR")
-        or Path.home() / "Pictures" / "Yang-gumi" / "Wallpaper"
-    ),
+    "portrait": Path(r"E:\图片\竖屏"),
+    "wallpaper": Path(r"E:\图片\壁纸"),
 }
 
 

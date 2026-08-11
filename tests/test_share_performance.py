@@ -100,6 +100,18 @@ class ShareAssetPerformanceTests(unittest.TestCase):
         self.assertNotIn("st.rerun()", inspect.getsource(ui_components.work_grid_card))
 
     def test_compat_static_route_has_long_lived_fingerprint_cache_headers(self):
+        route = (
+            Path(share_public.__file__).parent
+            / "tools"
+            / "streamlit_modern_compat"
+            / "streamlit"
+            / "web"
+            / "server"
+            / "starlette"
+            / "starlette_routes.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('"public, max-age=31536000, immutable"', route)
+        self.assertIn('"public, max-age=86400"', route)
         fast_server = Path(share_public.__file__).with_name("share_fast_server.py").read_text(encoding="utf-8")
         self.assertIn('"public, max-age=31536000, immutable"', fast_server)
         self.assertIn('"public, max-age=86400"', fast_server)

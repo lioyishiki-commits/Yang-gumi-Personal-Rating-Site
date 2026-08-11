@@ -235,6 +235,7 @@ static/daily_art/
 static/backgrounds/
 static/bangumi_rank_posters/
 static/seasonal_posters/
+static/r18_fallback_covers/
 static/ui/*
 !static/ui/README.md
 public_data.json
