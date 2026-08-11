@@ -40,8 +40,48 @@ class SingleInstanceLauncherTest(unittest.TestCase):
             cwd=start_yanggumi.ROOT,
         )
 
-    def test_no_other_browser_is_used_when_official_chrome_is_absent(self):
-        with mock.patch.object(start_yanggumi.Path, "is_file", return_value=False):
+    def test_windows_default_browser_is_used_when_official_chrome_is_absent(self):
+        with (
+            mock.patch.object(start_yanggumi.Path, "is_file", return_value=False),
+            mock.patch.object(start_yanggumi.sys, "platform", "win32"),
+            mock.patch.object(start_yanggumi.os, "startfile", create=True) as startfile,
+        ):
+            self.assertTrue(start_yanggumi.open_site_in_browser())
+        startfile.assert_called_once_with(start_yanggumi.URL)
+
+    def test_edge_is_used_when_windows_default_browser_handler_fails(self):
+        chrome_path = mock.MagicMock()
+        chrome_path.is_file.return_value = False
+        edge_path = mock.MagicMock()
+        edge_path.is_file.return_value = True
+        edge_path.__str__.return_value = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
+
+        with (
+            mock.patch.object(start_yanggumi, "OFFICIAL_CHROME_PATH", chrome_path),
+            mock.patch.object(start_yanggumi, "FALLBACK_BROWSER_PATHS", (("Microsoft Edge", edge_path),)),
+            mock.patch.object(start_yanggumi.sys, "platform", "win32"),
+            mock.patch.object(
+                start_yanggumi.os,
+                "startfile",
+                side_effect=OSError("missing URL handler"),
+                create=True,
+            ),
+            mock.patch.object(start_yanggumi.subprocess, "Popen") as popen,
+        ):
+            self.assertTrue(start_yanggumi.open_site_in_browser())
+        popen.assert_called_once_with([str(edge_path), start_yanggumi.URL], cwd=start_yanggumi.ROOT)
+
+    def test_browser_open_reports_failure_when_no_supported_handler_exists(self):
+        with (
+            mock.patch.object(start_yanggumi.Path, "is_file", return_value=False),
+            mock.patch.object(start_yanggumi.sys, "platform", "win32"),
+            mock.patch.object(
+                start_yanggumi.os,
+                "startfile",
+                side_effect=OSError("missing URL handler"),
+                create=True,
+            ),
+        ):
             self.assertFalse(start_yanggumi.open_site_in_browser())
 
     def test_transient_ghost_listener_can_release_without_killing_unknown_process(self):

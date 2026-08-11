@@ -1,6 +1,7 @@
 """Reliable Windows launcher for the local Yang-gumi Streamlit app."""
 from __future__ import annotations
 
+import os
 import socket
 import subprocess
 import sys
@@ -28,6 +29,12 @@ HEALTH_URL = f"{URL}/_stcore/health"
 LOG_PATH = ROOT / "data" / "yanggumi-launch.log"
 STARTUP_LOCK_PATH = ROOT / "data" / "yanggumi-startup.lock"
 OFFICIAL_CHROME_PATH = Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe")
+FALLBACK_BROWSER_PATHS = (
+    ("Microsoft Edge", Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe")),
+    ("Microsoft Edge", Path(r"C:\Program Files\Microsoft\Edge\Application\msedge.exe")),
+    ("Firefox", Path(r"C:\Program Files\Mozilla Firefox\firefox.exe")),
+    ("Firefox", Path(r"C:\Program Files (x86)\Mozilla Firefox\firefox.exe")),
+)
 
 
 def log(message: str) -> None:
@@ -97,13 +104,30 @@ def startup_lock(timeout: float = 45.0) -> Iterator[bool]:
 
 
 def open_site_in_browser(url: str = URL) -> bool:
-    """Open the local site only in the installed official Chrome."""
+    """Open the local site in Chrome or another installed Windows browser."""
     try:
         if OFFICIAL_CHROME_PATH.is_file():
             subprocess.Popen([str(OFFICIAL_CHROME_PATH), "--new-tab", url], cwd=ROOT)
             log(f"已交给官方 Chrome 打开：{url}")
             return True
-        log("浏览器打开失败：未找到官方 Chrome")
+
+        startfile = getattr(os, "startfile", None)
+        if sys.platform == "win32" and startfile is not None:
+            try:
+                startfile(url)
+                log(f"已交给 Windows 默认浏览器打开：{url}")
+                return True
+            except OSError as exc:
+                log(f"Windows 默认浏览器打开失败：{exc}")
+
+        for browser_name, browser_path in FALLBACK_BROWSER_PATHS:
+            if not browser_path.is_file():
+                continue
+            subprocess.Popen([str(browser_path), url], cwd=ROOT)
+            log(f"已交给 {browser_name} 打开：{url}")
+            return True
+
+        log("浏览器打开失败：未找到可用的 Chrome、Edge、Firefox 或默认浏览器")
         return False
     except OSError as exc:
         log(f"浏览器打开失败：{exc}")
