@@ -884,6 +884,7 @@ def update_launchers(url: str) -> bool:
         source = _refresh_owner_visitor_block(source)
         source = replace_public_url(source, url)
         source = replace_public_locator(source, locator_url)
+        source = source.replace("\r\n", "\n").replace("\r", "\n")
         BAT_PATH.write_text(source, encoding="ascii", newline="\r\n")
     visitor = (
         "@echo off\r\n"

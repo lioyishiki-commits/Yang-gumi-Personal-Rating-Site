@@ -491,6 +491,15 @@ class RemoteShareSecurityTests(unittest.TestCase):
             updated,
         )
 
+    def test_refreshed_owner_visitor_block_can_be_written_as_single_crlf(self):
+        root = Path(share_public.__file__).parent
+        source = (root / "启动只读分享.bat").read_text(encoding="ascii")
+        refreshed = share_public._refresh_owner_visitor_block(source)
+        normalized = refreshed.replace("\r\n", "\n").replace("\r", "\n")
+        encoded = normalized.replace("\n", "\r\n").encode("ascii")
+        self.assertNotIn(b"\r\r\n", encoded)
+        self.assertNotIn(b"\n", encoded.replace(b"\r\n", b""))
+
     def test_main_panel_keeps_showing_the_link_while_degraded(self):
         app_source = (Path(share_public.__file__).parent / "app.py").read_text(encoding="utf-8")
         self.assertIn('running = state in {"running", "degraded"}', app_source)
