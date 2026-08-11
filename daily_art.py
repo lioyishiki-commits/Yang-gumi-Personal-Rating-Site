@@ -1,4 +1,3 @@
-# Yang-gumi release: 1.3.0
 from __future__ import annotations
 
 import hashlib
@@ -21,8 +20,8 @@ SETTINGS_PATH = ROOT / "data" / "daily_art_settings.json"
 ASSET_DIR = ROOT / "static" / "daily_art"
 MANIFEST_VERSION = 10
 DEFAULT_LOCAL_ROOTS = {
-    "portrait": Path(r"E:\图片\竖屏"),
-    "wallpaper": Path(r"E:\图片\壁纸"),
+    "portrait": Path.home() / "Pictures" / "Yang-gumi" / "Portraits",
+    "wallpaper": Path.home() / "Pictures" / "Yang-gumi" / "Wallpapers",
 }
 
 

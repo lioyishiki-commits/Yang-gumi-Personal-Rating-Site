@@ -1,4 +1,3 @@
-# Yang-gumi release: 1.3.0
 import hashlib
 import json
 import os

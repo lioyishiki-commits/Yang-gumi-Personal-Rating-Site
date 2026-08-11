@@ -1,4 +1,3 @@
-<!-- Yang-gumi release: 1.3.0 -->
 # Yang-gumi Personal Rating Site
 
 一个本地部署、单用户使用的 ACGN 私人评分与记录网站。数据默认只保存在自己的电脑上；Bangumi 可匿名读取公开条目，也可选择连接一次只读令牌以补全 R18 条目资料。连接不会导入收藏或修改 Bangumi 账户。

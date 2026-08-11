@@ -1,9 +1,9 @@
-# Yang-gumi release: 1.3.0
 from __future__ import annotations
 
 import unittest
 from unittest.mock import patch
 
+import streamlit as st
 from streamlit.testing.v1 import AppTest
 
 import bangumi_client as bgm
@@ -12,6 +12,23 @@ import filtering as flt
 
 
 class PageSmokeTest(unittest.TestCase):
+    @staticmethod
+    def period_sample_works() -> list[dict[str, object]]:
+        return [
+            {
+                "id": 900001, "title": "季度样本一", "original_title": "Sample A",
+                "type": "动画", "status": "已看", "year": 2024,
+                "bangumi_id": 900001,
+                "release_date": "2024-01-10", "score_total": 8.2, "bangumi_score": 7.8,
+            },
+            {
+                "id": 900002, "title": "季度样本二", "original_title": "Sample B",
+                "type": "动画", "status": "已看", "year": 2025,
+                "bangumi_id": 900002,
+                "release_date": "2025-04-10", "score_total": 7.4, "bangumi_score": 7.0,
+            },
+        ]
+
     def open_page(self, page: str) -> AppTest:
         app = AppTest.from_file("app.py", default_timeout=30).run()
         next(button for button in app.button if button.key == f"sidebar_nav_{page}").click().run()
@@ -60,29 +77,31 @@ class PageSmokeTest(unittest.TestCase):
     def test_period_average_uses_a_continuous_year_range_on_both_pages(self):
         for page in ("条目库", "评分对比"):
             with self.subTest(page=page):
-                app = self.open_page(page)
-                prefix = "library" if page == "条目库" else "compare"
-                next(
-                    widget for widget in app.toggle
-                    if widget.key == f"{prefix}_period_average_enabled"
-                ).set_value(True).run()
-                mode = next(
-                    widget for widget in app.segmented_control if widget.label == "统计范围"
-                )
-                self.assertEqual(mode.options, ["单季度", "单年", "年代范围"])
-                mode.set_value("年代范围").run()
-                labels = {widget.label for widget in app.selectbox}
-                self.assertTrue({"起始年份", "结束年份"}.issubset(labels))
-                self.assertFalse(any(
-                    widget.label == "选择要合并统计的年份" for widget in app.multiselect
-                ))
-                self.assertTrue(any(
-                    "含首尾" in str(element.value) for element in app.caption
-                ))
-                self.assertEqual(list(app.exception), [])
+                with patch.object(db, "list_works", return_value=self.period_sample_works()):
+                    st.cache_data.clear()
+                    app = self.open_page(page)
+                    prefix = "library" if page == "条目库" else "compare"
+                    next(
+                        widget for widget in app.toggle
+                        if widget.key == f"{prefix}_period_average_enabled"
+                    ).set_value(True).run()
+                    mode = next(
+                        widget for widget in app.segmented_control if widget.label == "统计范围"
+                    )
+                    self.assertEqual(mode.options, ["单季度", "单年", "年代范围"])
+                    mode.set_value("年代范围").run()
+                    labels = {widget.label for widget in app.selectbox}
+                    self.assertTrue({"起始年份", "结束年份"}.issubset(labels))
+                    self.assertFalse(any(
+                        widget.label == "选择要合并统计的年份" for widget in app.multiselect
+                    ))
+                    self.assertTrue(any(
+                        "含首尾" in str(element.value) for element in app.caption
+                    ))
+                    self.assertEqual(list(app.exception), [])
 
     def test_period_average_filters_the_downstream_results_on_both_pages(self):
-        works = db.list_works()
+        works = self.period_sample_works()
         years = flt.release_year_options(works)
         empty_period = next(
             (year, quarter)
@@ -94,37 +113,40 @@ class PageSmokeTest(unittest.TestCase):
         )
         year, quarter = empty_period
 
-        library = self.open_page("条目库")
-        next(
-            widget for widget in library.toggle
-            if widget.key == "library_period_average_enabled"
-        ).set_value(True).run()
-        next(widget for widget in library.selectbox if widget.key == "library_period_year").set_value(year).run()
-        quarter_widget = next(
-            widget for widget in library.selectbox if widget.key == "library_period_quarter"
-        )
-        self.assertEqual(quarter_widget.options, ["Q4", "Q3", "Q2", "Q1"])
-        quarter_widget.set_value(quarter).run()
-        self.assertTrue(any(
-            "当前查询结果：0 /" in str(element.value)
-            for element in library.caption
-        ))
+        with patch.object(db, "list_works", return_value=works):
+            st.cache_data.clear()
+            library = self.open_page("条目库")
+            next(
+                widget for widget in library.toggle
+                if widget.key == "library_period_average_enabled"
+            ).set_value(True).run()
+            next(widget for widget in library.selectbox if widget.key == "library_period_year").set_value(year).run()
+            quarter_widget = next(
+                widget for widget in library.selectbox if widget.key == "library_period_quarter"
+            )
+            self.assertEqual(quarter_widget.options, ["Q4", "Q3", "Q2", "Q1"])
+            quarter_widget.set_value(quarter).run()
+            self.assertTrue(any(
+                "当前查询结果：0 /" in str(element.value)
+                for element in library.caption
+            ))
 
-        compare = self.open_page("评分对比")
-        next(
-            widget for widget in compare.toggle
-            if widget.key == "compare_period_average_enabled"
-        ).set_value(True).run()
-        next(widget for widget in compare.selectbox if widget.key == "compare_period_year").set_value(year).run()
-        next(
-            widget for widget in compare.selectbox if widget.key == "compare_period_quarter"
-        ).set_value(quarter).run()
-        self.assertTrue(any(
-            "共 0 部作品" in str(element.value)
-            for element in compare.caption
-        ))
-        self.assertEqual(list(library.exception), [])
-        self.assertEqual(list(compare.exception), [])
+            st.cache_data.clear()
+            compare = self.open_page("评分对比")
+            next(
+                widget for widget in compare.toggle
+                if widget.key == "compare_period_average_enabled"
+            ).set_value(True).run()
+            next(widget for widget in compare.selectbox if widget.key == "compare_period_year").set_value(year).run()
+            next(
+                widget for widget in compare.selectbox if widget.key == "compare_period_quarter"
+            ).set_value(quarter).run()
+            self.assertTrue(any(
+                "共 0 部作品" in str(element.value)
+                for element in compare.caption
+            ))
+            self.assertEqual(list(library.exception), [])
+            self.assertEqual(list(compare.exception), [])
 
     def test_bangumi_public_scores_support_searchable_tags_and_all_time_scopes(self):
         rows = [
@@ -154,6 +176,10 @@ class PageSmokeTest(unittest.TestCase):
             bgm, "enrich_precise_anime_ratings", side_effect=lambda values, **_: values
         ):
             app = self.open_page("Bangumi")
+            next(
+                widget for widget in app.toggle
+                if widget.key == "bangumi_public_analysis_enabled"
+            ).set_value(True).run()
             tags = next(widget for widget in app.multiselect if widget.key == "bangumi_public_tags")
             self.assertEqual(tags.label, "标签搜索（可多选）")
             self.assertIn("输入标签名称搜索", tags.placeholder)

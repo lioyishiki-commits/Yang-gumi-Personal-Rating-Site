@@ -1,4 +1,3 @@
-# Yang-gumi release: 1.3.0
 """Privacy-safe, styled XLSX export for owner and read-only analysis pages."""
 from __future__ import annotations
 

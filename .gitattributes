@@ -1,4 +1,3 @@
-# Yang-gumi release: 1.3.0
 * text=auto
 *.py text eol=lf
 *.md text eol=lf

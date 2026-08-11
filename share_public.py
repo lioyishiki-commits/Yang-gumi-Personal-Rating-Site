@@ -1,4 +1,3 @@
-# Yang-gumi release: 1.3.0
 from __future__ import annotations
 
 import argparse
@@ -31,6 +30,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import share_control as control
 import share_assets
+import streamlit_compat
 from share_auth import SHARE_COOKIE_NAME, session_cookie_value
 
 
@@ -607,6 +607,7 @@ def wait_for_public_streamlit(
 
 
 def streamlit_environment(token: str = "") -> dict[str, str]:
+    streamlit_compat.prepare_runtime()
     env = dict(os.environ)
     env.pop("YANGGUMI_READ_ONLY", None)
     env.pop("YANGGUMI_SHARE_TOKEN", None)

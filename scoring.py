@@ -1,4 +1,3 @@
-# Yang-gumi release: 1.3.0
 """Central scoring rules shared by every Yang-gumi page."""
 from __future__ import annotations
 

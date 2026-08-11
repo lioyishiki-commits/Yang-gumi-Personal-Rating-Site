@@ -1,4 +1,3 @@
-# Yang-gumi release: 1.3.0
 """Live regression test for UTF-8 Bangumi search and local SQLite search."""
 from __future__ import annotations
 

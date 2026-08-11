@@ -1,5 +1,4 @@
 ﻿@echo off
-@rem Yang-gumi release: 1.3.0
 setlocal
 chcp 65001 >nul
 set "PYTHONUTF8=1"

@@ -1,4 +1,3 @@
-# Yang-gumi release: 1.3.0
 """Shared score, difference, tag, year and null-safe sorting helpers."""
 from __future__ import annotations
 

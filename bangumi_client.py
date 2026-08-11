@@ -1,4 +1,3 @@
-# Yang-gumi release: 1.3.0
 """Small, defensive client for Bangumi's public v0 API."""
 from __future__ import annotations
 

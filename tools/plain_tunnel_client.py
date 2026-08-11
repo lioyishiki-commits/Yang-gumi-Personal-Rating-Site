@@ -1,4 +1,3 @@
-# Yang-gumi release: 1.3.0
 from __future__ import annotations
 
 # Vendored from plain.tunnel 0.12.7 (BSD-3-Clause).

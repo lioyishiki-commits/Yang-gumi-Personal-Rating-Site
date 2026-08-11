@@ -1,4 +1,3 @@
-# Yang-gumi release: 1.3.0
 import base64
 import tempfile
 import unittest

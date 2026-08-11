@@ -1,4 +1,3 @@
-/* Yang-gumi release: 1.3.0 */
 /* yanggumi-old-edge-compat-v2 */
 (function () {
   if (!Object.hasOwn) {

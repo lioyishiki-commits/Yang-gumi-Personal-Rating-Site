@@ -1,4 +1,3 @@
-# Yang-gumi release: 1.3.0
 param([switch]$CleanInstall)
 
 $ErrorActionPreference = 'Stop'

@@ -1,4 +1,3 @@
-<!-- Yang-gumi release: 1.3.0 -->
 # Third-party notices
 
 ## Streamlit frontend compatibility asset

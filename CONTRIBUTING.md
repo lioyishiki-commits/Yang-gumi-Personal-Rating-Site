@@ -1,4 +1,3 @@
-<!-- Yang-gumi release: 1.3.0 -->
 # Contributing
 
 欢迎提交问题和改进。开始前请：

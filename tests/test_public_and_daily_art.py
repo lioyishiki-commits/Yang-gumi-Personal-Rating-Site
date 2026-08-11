@@ -1,4 +1,3 @@
-# Yang-gumi release: 1.3.0
 from __future__ import annotations
 
 import gzip
@@ -181,7 +180,34 @@ class PublicAndDailyArtTest(unittest.TestCase):
         )
 
     def test_static_share_export_is_privacy_safe_and_self_contained(self):
-        with tempfile.TemporaryDirectory() as temp:
+        public_work = {
+            "id": 900001, "title": "公开样本", "original_title": "Public Sample",
+            "type": "动画", "subtype": "TV", "status": "已看", "year": 2025,
+            "score_total": 8.2, "bangumi_score": 7.8, "short_review": "公开短评",
+            "bangumi_summary": "公开简介", "bangumi_tags": ["测试"],
+            "updated_at": "2026-08-11T00:00:00",
+        }
+        for score_field in db.SCORE_FIELDS:
+            public_work.setdefault(score_field, None)
+        exported = {
+            "export_meta": {"read_only": True, "exported_at": ""},
+            "works": [dict(public_work)],
+        }
+        private_work = {**public_work, "cover_path": "", "cover_url": "", "bangumi_image_url": ""}
+        with tempfile.TemporaryDirectory() as temp, mock.patch.object(
+            db, "export_json", return_value=json.dumps(exported, ensure_ascii=False).encode("utf-8")
+        ), mock.patch.object(
+            db, "list_works", return_value=[private_work]
+        ), mock.patch.object(
+            db, "list_seasonal_anime", return_value=[]
+        ), mock.patch.object(
+            daily_art, "load_manifest", return_value={
+                "items": [
+                    {"asset": f"daily_art/sample-{index}.webp", "type": "portrait", "key": str(index)}
+                    for index in range(3)
+                ]
+            }
+        ):
             destination = share_static_export.build_public_site(Path(temp) / "site")
             self.assertEqual(
                 {path.name for path in destination.iterdir()},

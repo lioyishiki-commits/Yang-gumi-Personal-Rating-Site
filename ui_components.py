@@ -1,4 +1,3 @@
-# Yang-gumi release: 1.3.0
 from __future__ import annotations
 
 import base64
@@ -22,7 +21,7 @@ ROOT = Path(__file__).resolve().parent
 PLACEHOLDER = str(ROOT / "covers" / "default.svg")
 SOFT_PLACEHOLDER = str(ROOT / "static" / "placeholders" / "anime-soft.svg")
 LOCAL_GALLERY_FALLBACK = str(ROOT / "backgrounds" / "local-gallery-fallback.jpg")
-USER_WALLPAPER_DIR = Path(r"E:\图片\壁纸")
+USER_WALLPAPER_DIR = Path.home() / "Pictures" / "Yang-gumi" / "Wallpapers"
 RUNTIME_GALLERY_DIR = ROOT / "static" / "backgrounds"
 BACKGROUND_MODE = "off"
 BACKGROUND_INTERVAL_SECONDS = 15

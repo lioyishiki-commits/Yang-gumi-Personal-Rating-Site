@@ -1,5 +1,4 @@
 #!/usr/bin/env sh
-# Yang-gumi release: 1.3.0
 set -eu
 
 cd "$(dirname "$0")"
