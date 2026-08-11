@@ -1,3 +1,4 @@
+<!-- Yang-gumi release: 1.3.0 -->
 # Security Policy
 
 当前维护分支接受安全修复。请通过 GitHub 仓库的私密安全报告功能提交漏洞；不要在公开 Issue 中附上数据库、访问令牌、私人笔记或完整本机路径。

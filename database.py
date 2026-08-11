@@ -1,3 +1,4 @@
+# Yang-gumi release: 1.3.0
 """SQLite persistence and export helpers for Yang-gumi."""
 from __future__ import annotations
 

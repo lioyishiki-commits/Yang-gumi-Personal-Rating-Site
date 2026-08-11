@@ -1,3 +1,4 @@
+# Yang-gumi release: 1.3.0
 """Persistent, fault-tolerant appearance settings for Yang-gumi."""
 from __future__ import annotations
 

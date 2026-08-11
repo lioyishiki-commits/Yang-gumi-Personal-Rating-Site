@@ -1,3 +1,4 @@
+# Yang-gumi release: 1.3.0
 """Current-season Bangumi candidate pool and safe local status actions."""
 from __future__ import annotations
 

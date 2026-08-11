@@ -1,4 +1,5 @@
 ﻿@echo off
+@rem Yang-gumi release: 1.3.0
 chcp 65001 >nul
 title 卸载 Yang-gumi
 cd /d "%~dp0"

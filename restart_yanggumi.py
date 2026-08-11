@@ -1,3 +1,4 @@
+# Yang-gumi release: 1.3.0
 """Safely restart only the Yang-gumi Streamlit instance owned by this install."""
 from __future__ import annotations
 
