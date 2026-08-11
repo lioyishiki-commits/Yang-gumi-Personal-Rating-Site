@@ -142,6 +142,7 @@ class RemoteShareSecurityTests(unittest.TestCase):
     def test_websocket_health_rejects_non_http_urls(self):
         self.assertFalse(share_public.public_streamlit_websocket_ready("file:///tmp/not-a-tunnel"))
         source = Path(share_public.__file__).read_text(encoding="utf-8")
+        self.assertIn("proxy_aware_websocket_connect", source)
         self.assertIn("GET /_stcore/stream HTTP/1.1", source)
         self.assertIn("sec-websocket-accept", source)
         self.assertIn("Sec-WebSocket-Protocol: streamlit", source)
@@ -303,6 +304,26 @@ class RemoteShareSecurityTests(unittest.TestCase):
         self.assertIn("_terminate(tunnel)", monitor)
         self.assertIn('"TCPKeepAlive=yes"', source)
         self.assertIn('"ServerAliveCountMax=12"', source)
+
+    def test_plain_tunnel_disconnect_is_delegated_to_the_share_supervisor(self):
+        share_source = Path(share_public.__file__).read_text(encoding="utf-8")
+        client_source = Path(share_public.PLAIN_TUNNEL_CLIENT_PATH).read_text(encoding="utf-8")
+
+        self.assertIn('"--exit-on-disconnect"', share_source)
+        self.assertIn('parser.add_argument(\n        "--exit-on-disconnect"', client_source)
+        self.assertIn("if self.exit_on_disconnect:", client_source)
+        self.assertEqual(share_public.PUBLIC_HEALTH_DEGRADED_AFTER, 1)
+
+    def test_optional_locator_cannot_delay_tunnel_exit_detection_for_tens_of_seconds(self):
+        source = Path(share_public.__file__).read_text(encoding="utf-8")
+        monitor_start = source.index("while not _stop_requested():")
+        monitor_end = source.index("tunnel = None", monitor_start)
+        monitor = source[monitor_start:monitor_end]
+
+        self.assertEqual(share_public.LOCATOR_ATTEMPTS, 1)
+        self.assertLessEqual(share_public.LOCATOR_REQUEST_TIMEOUT_SECONDS, 2.5)
+        self.assertLess(monitor.index("tunnel.poll()"), monitor.index("sync_public_locator(final_url)"))
+        self.assertLess(monitor.index("sync_public_locator(final_url)"), monitor.index("continue"))
 
     def test_stale_localhost_run_is_recycled_through_the_stable_locator(self):
         threshold = share_public.PUBLIC_HEALTH_RECYCLE_AFTER

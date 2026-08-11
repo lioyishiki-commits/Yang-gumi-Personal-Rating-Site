@@ -70,7 +70,7 @@ class AnalysisExportTest(unittest.TestCase):
         expected = {
             "类型", "我的总评分", "Bangumi 评分", "评分差", "剧情", "角色塑造",
             "作画 / 摄影", "演出", "音乐 / 配音", "节奏", "个人偏爱",
-            "重看 / 重玩价值", "情绪后劲", "独特性", "氛围感", "影响力",
+            "重看价值", "情绪后劲", "独特性", "氛围感", "影响力",
             "开创性", "偏科惩罚",
         }
         self.assertTrue(expected.issubset(headers))

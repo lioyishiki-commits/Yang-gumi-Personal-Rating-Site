@@ -87,6 +87,19 @@ class PublicAndDailyArtTest(unittest.TestCase):
         self.assertNotIn("items.forEach", warm_source)
         self.assertNotIn("link.rel = 'preload'", warm_source)
 
+    def test_homepage_visible_season_posters_retry_and_use_remote_fallback(self):
+        source = Path(__file__).parents[1].joinpath("app.py").read_text(encoding="utf-8")
+        loader_start = source.index("function loadPoster(card, item)")
+        loader_end = source.index("function animationClass", loader_start)
+        loader_source = source[loader_start:loader_end]
+        self.assertIn("new Set([item.image, item.remote_image].filter(Boolean))", loader_source)
+        self.assertIn("poster.replaceChildren(img)", loader_source)
+        self.assertIn("img.onload = () => settle(true)", loader_source)
+        self.assertIn("img.onerror = () => settle(false)", loader_source)
+        self.assertIn("window.setTimeout(() => settle(false), 6000)", loader_source)
+        self.assertIn("retryUrl(source)", loader_source)
+        self.assertNotIn("cloneNode(false)", loader_source)
+
     def test_main_launcher_enables_compression_and_disables_file_watching(self):
         source = Path(__file__).parents[1].joinpath("start_yanggumi.py").read_text(encoding="utf-8")
         self.assertIn('"--server.enableWebsocketCompression", "true"', source)
@@ -97,8 +110,6 @@ class PublicAndDailyArtTest(unittest.TestCase):
         bundles = list(
             root.joinpath("tools", "streamlit_modern_compat", "streamlit", "static", "static", "js").glob("index.*.js")
         )
-        if not bundles:
-            self.skipTest("optional generated compatibility runtime is not included in the public source")
         self.assertEqual(len(bundles), 1)
         source = bundles[0].read_text(encoding="utf-8")
         self.assertNotIn("}static{", source)
@@ -169,66 +180,8 @@ class PublicAndDailyArtTest(unittest.TestCase):
         )
 
     def test_static_share_export_is_privacy_safe_and_self_contained(self):
-        exported = {
-            "export_meta": {"read_only": True},
-            "works": [{
-                "id": 1,
-                "title": "公开示例",
-                "original_title": "Public Example",
-                "type": "动画",
-                "status": "已看",
-                "score_total": 9.0,
-                "score_plot": 9.2,
-                "bangumi_summary": "公开简介",
-                "private_note": "must not be exported",
-            }],
-        }
-        score_config = {
-            "body": {"weights": {"score_plot": 1.0}, "labels": {"score_plot": "剧情"}},
-            "feeling": {"weights": {}, "labels": {}},
-            "era": {"weights": {}, "labels": {}},
-        }
-        manifest = {
-            "items": [
-                {"asset": f"daily_art/portrait-{index}.webp", "type": "portrait", "key": str(index)}
-                for index in range(3)
-            ]
-        }
         with tempfile.TemporaryDirectory() as temp:
-            with mock.patch.object(
-                share_static_export.db,
-                "export_json",
-                return_value=json.dumps(exported, ensure_ascii=False).encode("utf-8"),
-            ), mock.patch.object(
-                share_static_export.db,
-                "list_works",
-                return_value=[{"id": 1}],
-            ), mock.patch.object(
-                share_static_export.share_assets,
-                "work_cover_url",
-                return_value="/app/static/default.svg",
-            ), mock.patch.object(
-                share_static_export.share_assets,
-                "source_revision",
-                return_value=(1, 2, 3),
-            ), mock.patch.object(
-                share_static_export.daily_art,
-                "load_manifest",
-                return_value=manifest,
-            ), mock.patch.object(
-                share_static_export.seasonal,
-                "current_season",
-                return_value={"year": 2026, "season_code": "summer", "month_label": "7月"},
-            ), mock.patch.object(
-                share_static_export.db,
-                "list_seasonal_anime",
-                return_value=[],
-            ), mock.patch.object(
-                share_static_export.scoring,
-                "load_score_config",
-                return_value=score_config,
-            ):
-                destination = share_static_export.build_public_site(Path(temp) / "site")
+            destination = share_static_export.build_public_site(Path(temp) / "site")
             self.assertEqual(
                 {path.name for path in destination.iterdir()},
                 {"index.html", "snapshot.json"},

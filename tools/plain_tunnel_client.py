@@ -26,11 +26,18 @@ PROTOCOL_VERSION = 3
 
 class TunnelClient:
     def __init__(
-        self, *, destination_url: str, subdomain: str, tunnel_host: str, log_level: str
+        self,
+        *,
+        destination_url: str,
+        subdomain: str,
+        tunnel_host: str,
+        log_level: str,
+        exit_on_disconnect: bool = False,
     ) -> None:
         self.destination_url = destination_url
         self.subdomain = subdomain
         self.tunnel_host = tunnel_host
+        self.exit_on_disconnect = exit_on_disconnect
 
         if "localhost" in tunnel_host or "127.0.0.1" in tunnel_host:
             self.tunnel_http_url = f"http://{subdomain}.{tunnel_host}"
@@ -109,6 +116,9 @@ class TunnelClient:
                     self.logger.debug("Stopping reconnect attempts due to shutdown")
                     break
                 disconnect_message = f"Unexpected error: {e}."
+
+            if self.exit_on_disconnect:
+                raise ConnectionError(disconnect_message)
 
             if (
                 connection_duration is not None
@@ -594,12 +604,18 @@ def main() -> int:
     parser.add_argument("--subdomain", required=True)
     parser.add_argument("--tunnel-host", default="plaintunnel.com")
     parser.add_argument("--log-level", default="warning")
+    parser.add_argument(
+        "--exit-on-disconnect",
+        action="store_true",
+        help="Exit when the relay disconnects so an external supervisor can reconnect it.",
+    )
     args = parser.parse_args()
     client = TunnelClient(
         destination_url=args.destination_url.rstrip("/"),
         subdomain=args.subdomain.strip().lower(),
         tunnel_host=args.tunnel_host.strip().lower(),
         log_level=args.log_level,
+        exit_on_disconnect=args.exit_on_disconnect,
     )
     try:
         client.run()

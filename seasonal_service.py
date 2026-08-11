@@ -6,12 +6,13 @@ import html as html_lib
 import re
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from datetime import date, datetime, timedelta
 from typing import Any
 
 import bangumi_client as bgm
+import bangumi_archive
 import database as db
 import requests
 
@@ -20,6 +21,8 @@ SEASONAL_POSTER_ROOT = ROOT / "static" / "seasonal_posters"
 SEASONAL_SOURCE_PATH = ROOT / "data" / "seasonal_title_sources.json"
 MISSING_COVER_REFRESH_PATH = ROOT / "data" / "missing_cover_refresh.json"
 RATING_PRECISION_REFRESH_PATH = ROOT / "data" / "rating_precision_refresh.json"
+SAVED_PUBLIC_REFRESH_PATH = ROOT / "data" / "saved_bangumi_refresh.json"
+PUBLIC_DATA_REFRESH_PATH = ROOT / "data" / "public_data_refresh.json"
 KISSSUB_SCHEDULE_URL = "http://www.kisssub.org/"
 BGM_CALENDAR_URL = "https://bgm.tv/calendar"
 YUC_SEASON_BASE_URL = "https://yuc.wiki"
@@ -36,6 +39,11 @@ POSTER_HEADERS = {
 _scheduler_lock = threading.Lock()
 _scheduler_started = False
 _refresh_lock = threading.Lock()
+_public_data_refresh_lock = threading.Lock()
+PUBLIC_REFRESH_COMPONENTS = {
+    "current_season", "bangumi_r18_archive", "saved_bangumi_public_fields",
+    "missing_public_covers", "bangumi_rankings", "precise_anime_scores",
+}
 
 
 NON_JAPANESE_MARKERS = (
@@ -1002,6 +1010,25 @@ def _refresh_current_season(value: date | datetime | None = None) -> tuple[dict[
         message = "；".join(errors) or "本季没有可保存的 Bangumi 条目"
         db.mark_seasonal_sync(season["year"], season["season_code"], "error", message)
         raise RuntimeError(message)
+    precise_rows = bgm.enrich_precise_anime_ratings([
+        {
+            "id": item["bangumi_id"],
+            "score": item.get("bangumi_score"),
+            "votes": item.get("bangumi_total_votes"),
+        }
+        for item in candidates
+    ], max_workers=8)
+    precise_by_id = {
+        int(item["id"]): item for item in precise_rows
+        if item.get("precision_source") == "bangumi-rating-perspective"
+    }
+    for item in candidates:
+        precise = precise_by_id.get(int(item["bangumi_id"]))
+        if precise is None:
+            continue
+        item["bangumi_score"] = round(float(precise["score"]), 2)
+        if precise.get("votes") is not None:
+            item["bangumi_total_votes"] = int(precise["votes"])
     yuc_reference_count = int(source_entry.get("yuc_reference_count") or len(yuc_titles) or 0)
     yuc_count_difference = abs(len(candidates) - yuc_reference_count) if yuc_reference_count else 0
     source_entry["quarter_audit"].update({
@@ -1123,7 +1150,17 @@ def refresh_precise_anime_ratings() -> int:
         if not subject or bgm.japanese_source_status(subject) != "confirmed":
             continue
         works_by_subject.setdefault(int(work["bangumi_id"]), []).append(work)
-    subject_ids = list(dict.fromkeys([*bgm.cached_ranking_subject_ids("动画"), *works_by_subject]))
+    season = current_season()
+    seasonal_subject_ids = [
+        int(item["bangumi_id"])
+        for item in db.list_seasonal_anime(
+            season["year"], season["season_code"], include_unconfirmed=True,
+        )
+        if is_homepage_seasonal_anime(item)
+    ]
+    subject_ids = list(dict.fromkeys([
+        *bgm.cached_ranking_subject_ids("动画"), *works_by_subject, *seasonal_subject_ids,
+    ]))
     refreshed = bgm.enrich_precise_anime_ratings(
         [{"id": subject_id} for subject_id in subject_ids], force=True, max_workers=8,
     )
@@ -1140,19 +1177,210 @@ def refresh_precise_anime_ratings() -> int:
     RATING_PRECISION_REFRESH_PATH.parent.mkdir(parents=True, exist_ok=True)
     RATING_PRECISION_REFRESH_PATH.write_text(json.dumps({
         "date": datetime.now().date().isoformat(), "known_subjects": len(subject_ids),
+        "season_key": f'{season["year"]}-{season["season_code"]}',
+        "season_subject_ids": seasonal_subject_ids,
         "updated_local_works": updated, "finished_at": datetime.now().isoformat(timespec="seconds"),
     }, ensure_ascii=False, indent=2), encoding="utf-8")
     return len(subject_ids)
 
 
 def refresh_precise_anime_ratings_if_due(value: date | datetime | None = None) -> tuple[bool, int]:
-    today = (value or datetime.now()).date().isoformat()
+    now = value or datetime.now()
+    today = now.date().isoformat()
+    season = current_season(now)
+    seasonal_subject_ids = [
+        int(item["bangumi_id"])
+        for item in db.list_seasonal_anime(
+            season["year"], season["season_code"], include_unconfirmed=True,
+        )
+        if is_homepage_seasonal_anime(item)
+    ]
     try:
-        if json.loads(RATING_PRECISION_REFRESH_PATH.read_text(encoding="utf-8")).get("date") == today:
+        saved = json.loads(RATING_PRECISION_REFRESH_PATH.read_text(encoding="utf-8"))
+        if (
+            saved.get("date") == today
+            and saved.get("season_key") == f'{season["year"]}-{season["season_code"]}'
+            and saved.get("season_subject_ids") == seasonal_subject_ids
+        ):
             return False, 0
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         pass
     return True, refresh_precise_anime_ratings()
+
+
+def _write_refresh_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.replace(path)
+
+
+def refresh_saved_bangumi_public_fields(value: date | datetime | None = None, *, max_workers: int = 3) -> int:
+    """Refresh only public Bangumi fields for bound works; never touch personal fields."""
+    now = value or datetime.now()
+    works = [
+        dict(work) for work in db.list_works()
+        if str(work.get("bangumi_id") or "").isdigit()
+    ]
+
+    def fetch(work: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        try:
+            detail = bgm.get_subject(int(work["bangumi_id"]))
+        except Exception:
+            detail = None
+        return work, detail if isinstance(detail, dict) else None
+
+    fetched: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    workers = min(max(1, int(max_workers)), 4)
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {executor.submit(fetch, work): int(work["id"]) for work in works}
+        for future in as_completed(futures):
+            work, detail = future.result()
+            if detail is not None:
+                fetched.append((work, detail))
+
+    updated = 0
+    for work, detail in sorted(fetched, key=lambda pair: int(pair[0]["id"])):
+        subject_id = int(detail.get("id") or work["bangumi_id"])
+        db.cache_subject(subject_id, detail)
+        fields = bgm.binding_fields(
+            detail, str(work.get("title") or ""), str(work.get("original_title") or ""),
+        )
+        # update_bangumi with include_local_titles=False accepts bangumi_* only:
+        # status, scores, reviews, dates, local tags, art and local titles survive.
+        db.update_bangumi(int(work["id"]), fields, include_local_titles=False)
+        updated += 1
+
+    _write_refresh_json(SAVED_PUBLIC_REFRESH_PATH, {
+        "date": now.date().isoformat(),
+        "known_works": len(works),
+        "updated_public_subjects": updated,
+        "finished_at": datetime.now().isoformat(timespec="seconds"),
+    })
+    return updated
+
+
+def refresh_saved_bangumi_public_fields_if_due(
+    value: date | datetime | None = None, *, max_workers: int = 3,
+) -> tuple[bool, int]:
+    now = value or datetime.now()
+    try:
+        saved = json.loads(SAVED_PUBLIC_REFRESH_PATH.read_text(encoding="utf-8"))
+        if saved.get("date") == now.date().isoformat():
+            return False, 0
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        pass
+    return True, refresh_saved_bangumi_public_fields(now, max_workers=max_workers)
+
+
+def public_data_refresh_status() -> dict[str, Any]:
+    try:
+        payload = json.loads(PUBLIC_DATA_REFRESH_PATH.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return {}
+
+
+def refresh_public_data_if_due(
+    value: date | datetime | None = None, *, force: bool = False,
+) -> tuple[bool, dict[str, Any]]:
+    """Run the complete external/public refresh once per local day in one daemon.
+
+    Each component is isolated so a temporary upstream failure does not block
+    the others. Personal/user-authored fields are excluded by construction.
+    """
+    now = value or datetime.now()
+    today = now.date().isoformat()
+    previous = public_data_refresh_status()
+    completed_components = {
+        name for name, item in (previous.get("components") or {}).items()
+        if isinstance(item, dict) and item.get("status") == "success"
+    }
+    if (
+        not force
+        and previous.get("date") == today
+        and previous.get("status") == "success"
+        and PUBLIC_REFRESH_COMPONENTS.issubset(completed_components)
+    ):
+        return False, previous
+    if not _public_data_refresh_lock.acquire(blocking=False):
+        return False, public_data_refresh_status()
+
+    payload: dict[str, Any] = {
+        "date": today,
+        "status": "running",
+        "started_at": datetime.now().isoformat(timespec="seconds"),
+        "scheduled_for": f"{today}T00:00:00",
+        "personal_data_policy": "excluded",
+        "components": {},
+    }
+    def run_component(name: str, action: Any) -> None:
+        started = datetime.now().isoformat(timespec="seconds")
+        try:
+            result = action()
+            payload["components"][name] = {
+                "status": "success", "started_at": started,
+                "finished_at": datetime.now().isoformat(timespec="seconds"),
+                "result": result,
+            }
+        except Exception as exc:
+            payload["components"][name] = {
+                "status": "error", "started_at": started,
+                "finished_at": datetime.now().isoformat(timespec="seconds"),
+                "error": str(exc)[:500],
+            }
+        _write_refresh_json(PUBLIC_DATA_REFRESH_PATH, payload)
+
+    try:
+        _write_refresh_json(PUBLIC_DATA_REFRESH_PATH, payload)
+        run_component("current_season", lambda: _season_refresh_result(now))
+        run_component("bangumi_r18_archive", _archive_refresh_result)
+        run_component("saved_bangumi_public_fields", lambda: _saved_public_refresh_result(now))
+        run_component("missing_public_covers", lambda: _simple_refresh_result(refresh_missing_anime_covers_if_due(now)))
+        run_component("bangumi_rankings", lambda: _ranking_refresh_result(now))
+        run_component("precise_anime_scores", lambda: _simple_refresh_result(refresh_precise_anime_ratings_if_due(now)))
+        failed = any(item.get("status") != "success" for item in payload["components"].values())
+        payload["status"] = "partial" if failed else "success"
+        payload["finished_at"] = datetime.now().isoformat(timespec="seconds")
+        _write_refresh_json(PUBLIC_DATA_REFRESH_PATH, payload)
+        return True, payload
+    finally:
+        _public_data_refresh_lock.release()
+
+
+def _simple_refresh_result(result: tuple[bool, int]) -> dict[str, Any]:
+    changed, count = result
+    return {"changed": bool(changed), "count": int(count)}
+
+
+def _season_refresh_result(value: date | datetime) -> dict[str, Any]:
+    changed, season, count = refresh_current_season_if_due(value)
+    return {
+        "changed": bool(changed), "count": int(count),
+        "season": f'{season["year"]}-{season["season_code"]}',
+    }
+
+
+def _saved_public_refresh_result(value: date | datetime) -> dict[str, Any]:
+    changed, count = refresh_saved_bangumi_public_fields_if_due(value)
+    return {"changed": bool(changed), "count": int(count)}
+
+
+def _archive_refresh_result() -> dict[str, Any]:
+    result = bangumi_archive.refresh_r18_index()
+    return {
+        "changed": bool(result.get("changed")),
+        "count": int(result.get("records") or 0),
+        "asset": result.get("asset_name") or "",
+    }
+
+
+def _ranking_refresh_result(value: date | datetime) -> dict[str, Any]:
+    changed, counts = bgm.refresh_ranking_cache_if_due(value, max_workers=2)
+    return {
+        "changed": bool(changed), "counts": counts,
+        "count": sum(int(count) for count in counts.values()),
+    }
 
 
 def _midnight_refresh_scheduler() -> None:
@@ -1161,15 +1389,7 @@ def _midnight_refresh_scheduler() -> None:
         next_midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
         time.sleep(max(1.0, (next_midnight - now).total_seconds()))
         try:
-            refresh_current_season_if_due(datetime.now())
-        except Exception:
-            pass
-        try:
-            refresh_missing_anime_covers_if_due(datetime.now())
-        except Exception:
-            pass
-        try:
-            refresh_precise_anime_ratings_if_due(datetime.now())
+            refresh_public_data_if_due(datetime.now())
         except Exception:
             pass
 
@@ -1177,6 +1397,13 @@ def _midnight_refresh_scheduler() -> None:
 def _current_season_catchup() -> None:
     try:
         refresh_current_season_if_due(datetime.now())
+    except Exception:
+        pass
+
+
+def _public_data_catchup() -> None:
+    try:
+        refresh_public_data_if_due(datetime.now())
     except Exception:
         pass
 
@@ -1189,18 +1416,13 @@ def start_midnight_refresh_scheduler() -> None:
             return
         _scheduler_started = True
         threading.Thread(
-            target=_current_season_catchup,
-            name="yanggumi-season-catchup", daemon=True,
+            target=_public_data_catchup,
+            name="yanggumi-public-data-catchup", daemon=True,
         ).start()
         threading.Thread(
-            target=lambda: refresh_missing_anime_covers_if_due(datetime.now()),
-            name="yanggumi-cover-catchup", daemon=True,
+            target=_midnight_refresh_scheduler,
+            name="yanggumi-public-data-midnight", daemon=True,
         ).start()
-        threading.Thread(
-            target=lambda: refresh_precise_anime_ratings_if_due(datetime.now()),
-            name="yanggumi-rating-precision-catchup", daemon=True,
-        ).start()
-        threading.Thread(target=_midnight_refresh_scheduler, name="yanggumi-season-midnight", daemon=True).start()
 
 
 def reclassify_cached_season(year: int, season_code: str) -> int:
