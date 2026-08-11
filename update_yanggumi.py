@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import py_compile
+import re
 import shutil
 import sys
 import tempfile
@@ -11,6 +13,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -27,6 +30,8 @@ STATE_FILE = ROOT / ".yanggumi-update-state.json"
 RESTORE_ROOT = ROOT / "backups" / "update_restore_points"
 API_BASE = os.environ.get("YANGGUMI_UPDATE_API_BASE") or f"https://api.github.com/repos/{OWNER}/{REPOSITORY}"
 RAW_BASE = os.environ.get("YANGGUMI_UPDATE_RAW_BASE") or f"https://raw.githubusercontent.com/{OWNER}/{REPOSITORY}"
+ARCHIVE_BASE = os.environ.get("YANGGUMI_UPDATE_ARCHIVE_BASE") or f"https://codeload.github.com/{OWNER}/{REPOSITORY}/zip"
+MUTABLE_SHARE_LAUNCHER = "启动只读分享.bat"
 
 PROTECTED_PREFIXES = (
     ".git/", ".venv/", "backups/", "backgrounds/", "covers/", "data/",
@@ -268,6 +273,29 @@ def _restore(backup: Path) -> None:
             target.unlink()
 
 
+def _extend_backup(backup: Path, paths: list[str]) -> None:
+    _assert_program_only_paths(paths)
+    manifest_path = backup / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    entries = list(manifest.get("entries") or [])
+    known = {str(entry.get("path") or "") for entry in entries}
+    files_root = backup / "files"
+    for rel in sorted(set(paths)):
+        rel = _safe_relative(rel)
+        if rel in known:
+            continue
+        source = ROOT / Path(*PurePosixPath(rel).parts)
+        existed = source.is_file()
+        entries.append({"path": rel, "existed": existed})
+        known.add(rel)
+        if existed:
+            target = files_root / Path(*PurePosixPath(rel).parts)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+    manifest["entries"] = entries
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def _download_changes(files: list[dict[str, Any]], head: str, staging: Path) -> list[dict[str, Any]]:
     applicable = []
     for item in files:
@@ -288,6 +316,68 @@ def _download_changes(files: list[dict[str, Any]], head: str, staging: Path) -> 
             target.write_bytes(content)
         applicable.append(normalized)
     return applicable
+
+
+def _preserve_mutable_runtime_values(filename: str, content: bytes) -> bytes:
+    if filename.casefold() != MUTABLE_SHARE_LAUNCHER.casefold():
+        return content
+    current_path = ROOT / MUTABLE_SHARE_LAUNCHER
+    if not current_path.is_file():
+        return content
+    try:
+        incoming = content.decode("utf-8-sig")
+        current = current_path.read_text(encoding="utf-8-sig")
+    except UnicodeError as exc:
+        raise UpdateError(f"Cannot safely preserve runtime values in {MUTABLE_SHARE_LAUNCHER}") from exc
+    for variable in ("YANGGUMI_PUBLIC_URL", "YANGGUMI_SHARE_LOCATOR"):
+        pattern = re.compile(rf'^set "{re.escape(variable)}=.*"$', re.MULTILINE)
+        existing = pattern.search(current)
+        if existing and pattern.search(incoming):
+            incoming = pattern.sub(existing.group(0), incoming, count=1)
+    return incoming.encode("utf-8")
+
+
+def _download_snapshot(head: str, staging: Path) -> list[dict[str, Any]]:
+    archive_url = f"{ARCHIVE_BASE}/{urllib.parse.quote(head, safe='')}"
+    archive = _download(archive_url)
+    applicable: list[dict[str, Any]] = []
+    try:
+        with zipfile.ZipFile(io.BytesIO(archive)) as bundle:
+            members = [item for item in bundle.infolist() if not item.is_dir()]
+            if not members:
+                raise UpdateError("GitHub main archive is empty")
+            prefix = PurePosixPath(members[0].filename).parts[0]
+            for member in members:
+                parts = PurePosixPath(member.filename).parts
+                if not parts or parts[0] != prefix or len(parts) < 2:
+                    continue
+                filename = _safe_relative(PurePosixPath(*parts[1:]).as_posix())
+                if _protected(filename):
+                    continue
+                content = _preserve_mutable_runtime_values(filename, bundle.read(member))
+                target = staging / Path(*PurePosixPath(filename).parts)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(content)
+                applicable.append({"filename": filename, "previous_filename": None, "status": "modified"})
+    except zipfile.BadZipFile as exc:
+        raise UpdateError("Downloaded GitHub main archive is not a valid ZIP file") from exc
+    return applicable
+
+
+def _removed_paths(files: list[dict[str, Any]], current_paths: set[str]) -> list[dict[str, Any]]:
+    removed: list[dict[str, Any]] = []
+    for item in files:
+        filename = _safe_relative(item.get("filename") or "")
+        previous = item.get("previous_filename")
+        candidates = []
+        if str(item.get("status") or "") == "removed":
+            candidates.append(filename)
+        if previous:
+            candidates.append(_safe_relative(previous))
+        for candidate in candidates:
+            if candidate not in current_paths and not _protected(candidate):
+                removed.append({"filename": candidate, "previous_filename": None, "status": "removed"})
+    return removed
 
 
 def _apply(applicable: list[dict[str, Any]], staging: Path) -> list[Path]:
@@ -373,9 +463,11 @@ def check_and_update(*, restart_running: bool = False) -> int:
             "已停止以避免降级覆盖。"
         )
     state = _load_state()
-    if current_tuple == target_tuple:
-        if str(state.get("commit") or "") != head or str(state.get("version") or "") != current_version:
-            _write_state(current_version, head, "none")
+    if (
+        current_tuple == target_tuple
+        and str(state.get("commit") or "") == head
+        and str(state.get("version") or "") == current_version
+    ):
         print(f"GitHub 仓库没有更新。当前已是最新版本 {current_version}。")
         _restart_running_site_if_requested(restart_running)
         print("本季新番缓存会在网站启动后自动检查算法版本并按需重新核对。")
@@ -436,7 +528,11 @@ def check_and_update(*, restart_running: bool = False) -> int:
     try:
         with tempfile.TemporaryDirectory(prefix="yanggumi-update-") as temp_dir:
             staging = Path(temp_dir)
-            applicable = _download_changes(files, head, staging)
+            applicable = _download_snapshot(head, staging)
+            current_paths = {item["filename"] for item in applicable}
+            applicable.extend(_removed_paths(files, current_paths))
+            snapshot_paths = [item["filename"] for item in applicable]
+            _extend_backup(backup, snapshot_paths)
             changed_python = _apply(applicable, staging)
             _validate(changed_python)
         _write_state(target_version, head, level)
