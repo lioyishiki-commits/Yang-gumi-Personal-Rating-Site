@@ -4,6 +4,7 @@ set "YANGGUMI_PUBLIC_URL="
 set "YANGGUMI_SHARE_LOCATOR="
 
 rem One file, two modes:
+rem Program body is updater-managed; the two runtime link values above are preserved by the updater.
 rem - In the Yang-gumi project folder, start or open the owner's live share.
 rem - As the only file on another Windows PC or VM, open that live share.
 if exist "%~dp0share_public.py" goto owner
