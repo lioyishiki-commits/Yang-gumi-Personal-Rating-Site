@@ -1,3 +1,4 @@
+# Yang-gumi release: 1.3.0
 """Reliable Windows launcher for the local Yang-gumi Streamlit app."""
 from __future__ import annotations
 

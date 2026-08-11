@@ -1,3 +1,4 @@
+# Yang-gumi release: 1.3.0
 from __future__ import annotations
 
 import json

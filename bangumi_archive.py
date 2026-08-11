@@ -1,3 +1,4 @@
+# Yang-gumi release: 1.3.0
 """Read-only NSFW supplement built from Bangumi's official weekly Archive.
 
 The public v0 API intentionally omits some adult subjects.  Yang-gumi keeps a

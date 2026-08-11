@@ -1,3 +1,4 @@
+# Yang-gumi release: 1.3.0
 """Install the tested Streamlit frontend used by Yang-gumi.
 
 Streamlit 1.58.0's stock frontend uses JavaScript syntax and Web APIs that are

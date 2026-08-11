@@ -1,4 +1,5 @@
 @echo off
+@rem Yang-gumi release: 1.3.0
 setlocal EnableExtensions DisableDelayedExpansion
 set "YANGGUMI_PUBLIC_URL="
 set "YANGGUMI_SHARE_LOCATOR="

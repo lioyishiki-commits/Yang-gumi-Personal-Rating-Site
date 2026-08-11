@@ -1,3 +1,4 @@
+# Yang-gumi release: 1.3.0
 """Windows uninstaller for a local Yang-gumi installation."""
 from __future__ import annotations
 
