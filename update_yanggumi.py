@@ -418,12 +418,74 @@ def _apply(applicable: list[dict[str, Any]], staging: Path) -> list[Path]:
     return changed_python
 
 
-def _validate(changed_python: list[Path]) -> None:
+def _snapshot_mismatches(applicable: list[dict[str, Any]], staging: Path) -> list[dict[str, Any]]:
+    mismatches: list[dict[str, Any]] = []
+    for item in applicable:
+        if item.get("status") == "removed":
+            continue
+        filename = _safe_relative(item["filename"])
+        source = staging / Path(*PurePosixPath(filename).parts)
+        target = ROOT / Path(*PurePosixPath(filename).parts)
+        if not source.is_file() or not target.is_file() or source.read_bytes() != target.read_bytes():
+            mismatches.append(item)
+    return mismatches
+
+
+def _validate(
+    changed_python: list[Path],
+    applicable: list[dict[str, Any]] | None = None,
+    staging: Path | None = None,
+) -> None:
     for required in REQUIRED_AFTER_UPDATE:
         if not (ROOT / required).exists():
             raise UpdateError(f"更新后缺少必要文件：{required}")
     for path in changed_python:
         py_compile.compile(str(path), doraise=True)
+    if applicable is not None and staging is not None:
+        mismatches = _snapshot_mismatches(applicable, staging)
+        if mismatches:
+            names = "、".join(item["filename"] for item in mismatches[:8])
+            raise UpdateError(f"更新后文件内容校验失败：{names}")
+
+
+def _repair_same_version(
+    current_version: str, head: str, *, restart_running: bool, state_is_current: bool,
+) -> int:
+    print("正在逐文件核对本机程序与 GitHub 正式快照……")
+    with tempfile.TemporaryDirectory(prefix="yanggumi-integrity-") as temp_dir:
+        staging = Path(temp_dir)
+        applicable = _download_snapshot(head, staging)
+        mismatches = _snapshot_mismatches(applicable, staging)
+        if not mismatches:
+            if not state_is_current:
+                _write_state(current_version, head, "none")
+            print(f"程序文件核对通过。当前已是完整的 {current_version}。")
+            _restart_running_site_if_requested(restart_running)
+            print("本季新番缓存会在网站启动后自动检查算法版本并按需重新核对。")
+            return 0
+        paths = [item["filename"] for item in mismatches]
+        _assert_program_only_paths(paths)
+        print(f"发现 {len(paths)} 个程序文件缺失或内容不一致，将从同版本正式快照修复。")
+        print("个人内容保护检查：通过（数据库、评分、图片、备份、导出和私人配置不在修复范围）。")
+        choice = os.environ.get("YANGGUMI_UPDATE_SKIP_PROMPT", "").strip().upper()
+        if choice not in {"Y", "N"}:
+            choice = input("是否修复？请输入 Y 或 N：").strip().upper()
+        if choice != "Y":
+            print("已选择 N：取消修复，未修改任何文件。")
+            return 0
+        backup = _backup(paths, current_version, current_version, head, head)
+        print(f"已创建修复前返回点：{backup}")
+        try:
+            changed_python = _apply(mismatches, staging)
+            _validate(changed_python, mismatches, staging)
+            _write_state(current_version, head, "repair")
+        except Exception:
+            _restore(backup)
+            print("修复失败，已自动恢复修复前的程序文件；数据库和用户记录始终未被改动。")
+            raise
+    print(f"同版本程序文件修复成功，并已逐文件验证：{current_version}")
+    _restart_running_site_if_requested(restart_running)
+    return 0
 
 
 def _write_state(version: str, head: str, level: str) -> None:
@@ -463,21 +525,15 @@ def check_and_update(*, restart_running: bool = False) -> int:
             "已停止以避免降级覆盖。"
         )
     state = _load_state()
-    if (
+    state_is_current = (
         current_tuple == target_tuple
         and str(state.get("commit") or "") == head
         and str(state.get("version") or "") == current_version
-    ):
-        print(f"GitHub 仓库没有更新。当前已是最新版本 {current_version}。")
-        _restart_running_site_if_requested(restart_running)
-        print("本季新番缓存会在网站启动后自动检查算法版本并按需重新核对。")
-        return 0
-    if current_tuple == target_tuple and not state.get("commit") and not state.get("version"):
-        _write_state(current_version, head, "none")
-        print(f"当前程序版本已经是最新版本 {current_version}；已补全本机更新记录。")
-        _restart_running_site_if_requested(restart_running)
-        print("本季新番缓存会在网站启动后自动检查算法版本并按需重新核对。")
-        return 0
+    )
+    if current_tuple == target_tuple:
+        return _repair_same_version(
+            current_version, head, restart_running=restart_running, state_is_current=state_is_current,
+        )
     state_version = str(state.get("version") or "")
     base = str(state.get("commit") or "") if state_version == current_version else ""
     state_base = base
@@ -540,7 +596,7 @@ def check_and_update(*, restart_running: bool = False) -> int:
             snapshot_paths = [item["filename"] for item in applicable]
             _extend_backup(backup, snapshot_paths)
             changed_python = _apply(applicable, staging)
-            _validate(changed_python)
+            _validate(changed_python, applicable, staging)
         _write_state(target_version, head, level)
     except Exception:
         _restore(backup)

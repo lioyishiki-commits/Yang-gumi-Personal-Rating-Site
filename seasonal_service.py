@@ -26,7 +26,7 @@ PUBLIC_DATA_REFRESH_PATH = ROOT / "data" / "public_data_refresh.json"
 KISSSUB_SCHEDULE_URL = "http://www.kisssub.org/"
 BGM_CALENDAR_URL = "https://bgm.tv/calendar"
 YUC_SEASON_BASE_URLS = ("https://yuc.wiki", "http://yuc.wiki")
-SEASONAL_CACHE_REVISION = "dual-source-tv-yuc-bgm-v3"
+SEASONAL_CACHE_REVISION = "dual-source-tv-yuc-bgm-v4"
 KISSSUB_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Yang-gumi/1.0",
     "Accept-Language": "zh-CN,zh;q=0.9,ja;q=0.7",
@@ -450,10 +450,11 @@ def fetch_yuc_season_entries(season: dict[str, Any]) -> list[dict[str, Any]]:
     if response is None:
         raise RuntimeError("YUC 当季页面抓取失败：" + "；".join(errors))
     details = parse_yuc_season_entries(response.text)
+    schedule_entries = parse_yuc_schedule_entries(response.text)
     details_by_key = {bgm.normalize_title(entry["title"]): entry for entry in details}
     details_by_poster = {entry["poster_url"]: entry for entry in details if entry.get("poster_url")}
     entries: list[dict[str, Any]] = []
-    for schedule_entry in parse_yuc_schedule_entries(response.text):
+    for schedule_entry in schedule_entries:
         if schedule_entry.get("is_endless") or schedule_entry.get("is_short"):
             continue
         key = bgm.normalize_title(schedule_entry["title"])
@@ -470,6 +471,10 @@ def fetch_yuc_season_entries(season: dict[str, Any]) -> list[dict[str, Any]]:
             aliases.extend([detail["title"], detail.get("original_title") or ""])
         merged["aliases"] = list(dict.fromkeys(value for value in aliases if value))
         merged["yuc_reference_count"] = len(details)
+        merged["yuc_schedule_count"] = len(schedule_entries)
+        merged["yuc_source_url"] = str(response.url)
+        merged["yuc_http_status"] = int(response.status_code)
+        merged["yuc_response_bytes"] = len(response.content)
         entries.append(merged)
     if not entries:
         raise RuntimeError("Yuc Wiki 当季页面没有解析到标题和海报")
@@ -514,6 +519,11 @@ def _update_yuc_source_entry(
             rows = fetch_yuc_season_entries(season)
             entry["yuc_titles"] = [row["title"] for row in rows]
             entry["yuc_reference_count"] = int(rows[0].get("yuc_reference_count") or len(rows))
+            entry["yuc_schedule_count"] = int(rows[0].get("yuc_schedule_count") or len(rows))
+            entry["yuc_regular_count"] = len(rows)
+            entry["yuc_source_url"] = str(rows[0].get("yuc_source_url") or "")
+            entry["yuc_http_status"] = int(rows[0].get("yuc_http_status") or 0)
+            entry["yuc_response_bytes"] = int(rows[0].get("yuc_response_bytes") or 0)
             entry["yuc_posters"] = {row["title"]: row["poster_url"] for row in rows}
             entry["yuc_short_titles"] = [row["title"] for row in rows if row.get("is_short")]
             entry["yuc_aliases"] = {

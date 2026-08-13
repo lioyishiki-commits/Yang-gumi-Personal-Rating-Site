@@ -240,7 +240,7 @@ class SeasonalAnimeTest(unittest.TestCase):
         <div style="float:left"><img data-src="only-detail.jpg"></div>
         <div><table><tr><td><p class="title_cn_r1">没有周播排期的作品</p></td></tr></table></div>
         """
-        response = MagicMock(text=page)
+        response = MagicMock(text=page, url="https://yuc.wiki/202607/", status_code=200, content=page.encode())
         response.raise_for_status.return_value = None
         with patch("seasonal_service.requests.get", return_value=response):
             rows = seasonal.fetch_yuc_season_entries(seasonal.current_season(datetime(2026, 7, 1)))
@@ -250,6 +250,9 @@ class SeasonalAnimeTest(unittest.TestCase):
         self.assertIn("Re:ゼロから始める異世界生活 4th season 奪還編", rows[0]["aliases"])
         self.assertEqual((rows[0]["broadcast_day"], rows[0]["broadcast_time"]), (2, "21:00"))
         self.assertEqual(rows[0]["yuc_reference_count"], 2)
+        self.assertEqual(rows[0]["yuc_schedule_count"], 1)
+        self.assertEqual(rows[0]["yuc_source_url"], "https://yuc.wiki/202607/")
+        self.assertEqual(rows[0]["yuc_http_status"], 200)
 
     def test_yuc_fetch_falls_back_to_http_when_https_certificate_fails(self):
         page = """
@@ -260,7 +263,7 @@ class SeasonalAnimeTest(unittest.TestCase):
         <div style="float:left"><img data-src="same.jpg"></div>
         <div><table><tr><td><p class="title_cn_r1">当季作品</p></td></tr></table></div>
         """
-        response = MagicMock(text=page)
+        response = MagicMock(text=page, url="http://yuc.wiki/202607/", status_code=200, content=page.encode())
         response.raise_for_status.return_value = None
         with patch(
             "seasonal_service.requests.get",

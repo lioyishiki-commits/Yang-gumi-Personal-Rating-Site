@@ -115,6 +115,61 @@ class UpdateSnapshotRepairTests(unittest.TestCase):
             self.assertEqual(state["version"], "1.3.1")
             self.assertEqual(state["commit"], "new")
 
+    def test_same_version_repairs_drift_instead_of_trusting_version_and_state(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "install"
+            root.mkdir()
+            (root / "VERSION").write_text("1.3.6\n", encoding="utf-8")
+            (root / ".yanggumi-update-state.json").write_text(
+                json.dumps({"version": "1.3.6", "commit": "head"}), encoding="utf-8"
+            )
+            (root / "app.py").write_text("VALUE = 'STALE'\n", encoding="utf-8")
+            data_dir = root / "data"
+            data_dir.mkdir()
+            database = data_dir / "acgn.db"
+            database.write_bytes(b"PERSONAL DATA")
+
+            def snapshot(_head: str, staging: Path):
+                (staging / "app.py").write_text("VALUE = 'OFFICIAL'\n", encoding="utf-8")
+                return [{"filename": "app.py", "previous_filename": None, "status": "modified"}]
+
+            variables = {
+                "ROOT": root,
+                "VERSION_FILE": root / "VERSION",
+                "STATE_FILE": root / ".yanggumi-update-state.json",
+                "RESTORE_ROOT": root / "backups" / "update_restore_points",
+                "REQUIRED_AFTER_UPDATE": ("app.py",),
+            }
+            with mock.patch.multiple(updater, **variables), mock.patch.object(
+                updater, "_head_commit", return_value="head"
+            ), mock.patch.object(updater, "_remote_version", return_value="1.3.6"), mock.patch.object(
+                updater, "_download_snapshot", side_effect=snapshot
+            ), mock.patch.object(updater, "_restart_running_site_if_requested"), mock.patch.dict(
+                os.environ, {"YANGGUMI_UPDATE_SKIP_PROMPT": "Y"}
+            ):
+                result = updater.check_and_update(restart_running=False)
+
+            self.assertEqual(result, 0)
+            self.assertEqual((root / "app.py").read_text(encoding="utf-8"), "VALUE = 'OFFICIAL'\n")
+            self.assertEqual(database.read_bytes(), b"PERSONAL DATA")
+            state = json.loads((root / ".yanggumi-update-state.json").read_text(encoding="utf-8"))
+            self.assertEqual(state["level"], "repair")
+
+    def test_post_write_validation_rejects_any_snapshot_mismatch(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "install"
+            staging = Path(temp_dir) / "staging"
+            root.mkdir()
+            staging.mkdir()
+            (root / "app.py").write_text("VALUE = 'WRONG'\n", encoding="utf-8")
+            (staging / "app.py").write_text("VALUE = 'EXPECTED'\n", encoding="utf-8")
+            applicable = [{"filename": "app.py", "previous_filename": None, "status": "modified"}]
+            with mock.patch.object(updater, "ROOT", root), mock.patch.object(
+                updater, "REQUIRED_AFTER_UPDATE", ("app.py",)
+            ):
+                with self.assertRaisesRegex(updater.UpdateError, "app.py"):
+                    updater._validate([], applicable, staging)
+
 
 if __name__ == "__main__":
     unittest.main()
