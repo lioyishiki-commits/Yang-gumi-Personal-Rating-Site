@@ -251,6 +251,26 @@ class SeasonalAnimeTest(unittest.TestCase):
         self.assertEqual((rows[0]["broadcast_day"], rows[0]["broadcast_time"]), (2, "21:00"))
         self.assertEqual(rows[0]["yuc_reference_count"], 2)
 
+    def test_yuc_fetch_falls_back_to_http_when_https_certificate_fails(self):
+        page = """
+        <table><tr><td class="date2">周一 (月)</td></tr></table>
+        <div style="float:left"><div class="div_date"><p>21:00~</p><img src="same.jpg"></div>
+        <div><table><tr><td class="date_title_">当季作品</td></tr></table></div></div>
+        <p class="intro">details</p>
+        <div style="float:left"><img data-src="same.jpg"></div>
+        <div><table><tr><td><p class="title_cn_r1">当季作品</p></td></tr></table></div>
+        """
+        response = MagicMock(text=page)
+        response.raise_for_status.return_value = None
+        with patch(
+            "seasonal_service.requests.get",
+            side_effect=[seasonal.requests.exceptions.SSLError("expired"), response],
+        ) as request:
+            rows = seasonal.fetch_yuc_season_entries(seasonal.current_season(datetime(2026, 7, 1)))
+        self.assertEqual([item["title"] for item in rows], ["当季作品"])
+        self.assertEqual(request.call_args_list[0].args[0], "https://yuc.wiki/202607/")
+        self.assertEqual(request.call_args_list[1].args[0], "http://yuc.wiki/202607/")
+
     def test_current_quarter_translation_difference_can_match_safely(self):
         translated = subject(335)
         translated["name_cn"] = "描绘直至生命尽头"
@@ -518,8 +538,8 @@ class SeasonalAnimeTest(unittest.TestCase):
         ), patch("seasonal_service.bgm.get_subject", side_effect=RuntimeError("offline")), patch(
             "seasonal_service.preload_seasonal_posters", return_value=0
         ):
-            refreshed, count = seasonal.refresh_current_season(datetime(2026, 7, 2))
-        self.assertEqual((refreshed["season_code"], count), ("Q3", 1))
+            with self.assertRaisesRegex(RuntimeError, "offline"):
+                seasonal.refresh_current_season(datetime(2026, 7, 2))
         rows = db.list_seasonal_anime(2026, "Q3", include_unconfirmed=True)
         self.assertEqual([row["bangumi_id"] for row in rows], [808])
 
