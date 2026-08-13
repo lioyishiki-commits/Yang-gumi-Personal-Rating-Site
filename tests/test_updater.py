@@ -117,6 +117,7 @@ class UpdaterTest(unittest.TestCase):
             ),
             patch.object(updater, "_tag_commit") as tag_commit,
             patch.object(updater, "_request_json") as request_json,
+            patch.dict(os.environ, {"YANGGUMI_UPDATE_SKIP_PROMPT": "Y"}),
         ):
             self.assertEqual(updater.check_and_update(), 0)
         tag_commit.assert_not_called()
@@ -141,6 +142,7 @@ class UpdaterTest(unittest.TestCase):
                 }),
             ),
             patch.object(restart_yanggumi, "restart_running_site", return_value={"restarted": True}) as restart,
+            patch.dict(os.environ, {"YANGGUMI_UPDATE_SKIP_PROMPT": "Y"}),
         ):
             self.assertEqual(updater.check_and_update(restart_running=True), 0)
         restart.assert_called_once_with()
