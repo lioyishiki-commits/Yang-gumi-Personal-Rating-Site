@@ -78,14 +78,40 @@ class PublicAndDailyArtTest(unittest.TestCase):
 
     def test_homepage_only_preloads_visible_and_adjacent_season_posters(self):
         source = Path(__file__).parents[1].joinpath("app.py").read_text(encoding="utf-8")
-        warm_start = source.index("function warmPosterCache()")
-        warm_end = source.index("function signature(item)", warm_start)
+        warm_start = source.index("function warmPosterCache(generation)")
+        warm_end = source.index("function addSlot", warm_start)
         warm_source = source[warm_start:warm_end]
         self.assertIn("displaySlots()", warm_source)
         self.assertIn("current - 3", warm_source)
         self.assertIn("current + 3", warm_source)
+        self.assertIn("requestIdleCallback", warm_source)
+        self.assertIn("!visibleIndexes.has(index)", warm_source)
         self.assertNotIn("items.forEach", warm_source)
         self.assertNotIn("link.rel = 'preload'", warm_source)
+
+    def test_homepage_reveals_carousel_only_after_real_visible_images_load(self):
+        source = Path(__file__).parents[1].joinpath("app.py").read_text(encoding="utf-8")
+        self.assertIn("record.img.fetchPriority = 'low'", source)
+        self.assertIn("img.fetchPriority = 'high'", source)
+        self.assertIn(".yg-season-live-stage:not(.is-ready) .yg-season-card{{opacity:0!important;pointer-events:none;}}", source)
+        self.assertIn("posterLoads.push(loadPoster(card, item));", source)
+        self.assertIn("const results = await Promise.all(posterLoads);", source)
+        self.assertIn("const complete = results.length === offsets.length && results.every(Boolean);", source)
+        self.assertIn("await waitForPaint();", source)
+        self.assertIn("stage.classList.add('is-ready');", source)
+        self.assertIn("render(true, 0).then(ready => {{", source)
+        self.assertNotIn('<div class="yg-season-progress is-running"', source)
+
+    def test_homepage_carousel_render_is_atomic_across_every_navigation_path(self):
+        source = Path(__file__).parents[1].joinpath("app.py").read_text(encoding="utf-8")
+        self.assertIn("let renderGeneration = 0;", source)
+        self.assertIn("stage.classList.remove('is-ready');", source)
+        self.assertIn("if (generation !== renderGeneration) return false;", source)
+        self.assertIn("const ready = await render(false, delta);", source)
+        self.assertIn("const ready = await render(true, 0);", source)
+        self.assertIn("if (ready) restartAuto();", source)
+        self.assertIn("root.classList.add('is-loading');", source)
+        self.assertIn("root.classList.remove('is-loading');", source)
 
     def test_homepage_visible_season_posters_retry_and_use_remote_fallback(self):
         source = Path(__file__).parents[1].joinpath("app.py").read_text(encoding="utf-8")
@@ -97,6 +123,11 @@ class PublicAndDailyArtTest(unittest.TestCase):
         self.assertIn("img.onload = () => settle(true)", loader_source)
         self.assertIn("img.onerror = () => settle(false)", loader_source)
         self.assertIn("window.setTimeout(() => settle(false), 6000)", loader_source)
+        self.assertIn("img.decode()", loader_source)
+        self.assertIn("const decodeTimer = window.setTimeout(() => finish(false), 6000)", loader_source)
+        self.assertIn("if (!decoded || img.naturalWidth <= 0)", loader_source)
+        self.assertIn("resolve(showFallback())", loader_source)
+        self.assertIn("if (!stillCurrent()) {{", loader_source)
         self.assertIn("retryUrl(source)", loader_source)
         self.assertNotIn("cloneNode(false)", loader_source)
 

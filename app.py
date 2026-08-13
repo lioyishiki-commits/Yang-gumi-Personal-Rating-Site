@@ -1021,20 +1021,12 @@ def render_seasonal_anime_panel(works: list[dict[str, Any]]) -> None:
     desired_offsets = [-2, -1, 0, 1, 2] if len(carousel_items) >= 5 else [-1, 0, 1] if len(carousel_items) >= 3 else [0, 1] if len(carousel_items) == 2 else [0]
     display_slots: list[tuple[int, int]] = []
     seen_indexes: set[int] = set()
-    seen_signatures: set[str] = set()
-
-    def item_signature(item: dict[str, Any]) -> str:
-        return str(item.get("image") or item.get("title") or item.get("id") or "")
-
     def add_slot(position: int, preferred: int, step: int) -> None:
         for distance in range(len(carousel_items)):
             item_index = (preferred + distance * step) % len(carousel_items)
-            item = carousel_items[item_index]
-            signature = item_signature(item)
-            if item_index in seen_indexes or signature in seen_signatures:
+            if item_index in seen_indexes:
                 continue
             seen_indexes.add(item_index)
-            seen_signatures.add(signature)
             display_slots.append((position, item_index))
             return
 
@@ -1063,7 +1055,7 @@ def render_seasonal_anime_panel(works: list[dict[str, Any]]) -> None:
         <section class="yg-season-live-stage"></section>
         <button class="yg-season-arrow next" type="button" aria-label="下一部">›</button>
       </div>
-      <div class="yg-season-progress is-running" aria-hidden="true"><span></span></div>
+      <div class="yg-season-progress" aria-hidden="true"><span></span></div>
     </div>
     <style>
       html,body{{margin:0;background:transparent;color:#e7e7e9;font-family:Inter,"Segoe UI","Microsoft YaHei",sans-serif;overflow:hidden;}}
@@ -1076,6 +1068,8 @@ def render_seasonal_anime_panel(works: list[dict[str, Any]]) -> None:
       .yg-season-live-page{{height:30px;margin:0 0 8px;text-align:center;color:#e18aa1;font-size:17px;font-weight:900;line-height:30px;}}
       .yg-season-live-shell{{display:grid;grid-template-columns:92px minmax(0,1fr) 92px;align-items:center;gap:14px;height:585px;}}
       .yg-season-live-stage{{position:relative;height:565px;overflow:hidden;border-radius:18px;background:radial-gradient(circle at 50% 34%,rgba(214,90,122,.12),transparent 36%),#1f2023;}}
+      .yg-season-live-stage:not(.is-ready) .yg-season-card{{opacity:0!important;pointer-events:none;}}
+      .yg-season-live.is-loading .yg-season-arrow,.yg-season-live.is-loading .yg-season-week{{pointer-events:none;}}
       .yg-season-arrow{{display:grid;place-items:center;width:82px;height:92px;margin:auto;padding:0;border:1px solid rgba(214,90,122,.38);border-radius:18px;background:#202126;color:#d8d8dc;font-size:34px;font-weight:900;line-height:1;cursor:pointer;box-shadow:0 14px 32px rgba(0,0,0,.22);}}
       .yg-season-arrow:hover{{border-color:rgba(214,90,122,.72);background:#28292d;color:#fff;}}
       .yg-season-card{{position:absolute;top:24px;left:50%;width:230px;min-width:0;opacity:0;filter:brightness(.86);transform:translate3d(-50%,0,0) scale(.58);will-change:transform,opacity,filter;backface-visibility:hidden;contain:layout paint style;}}
@@ -1143,6 +1137,8 @@ def render_seasonal_anime_panel(works: list[dict[str, Any]]) -> None:
         }} catch (error) {{}}
         let autoTimer = null;
         let moving = false;
+        let renderGeneration = 0;
+        let warmTimer = null;
         const autoDelay = 10000;
         const offsets = items.length >= 5 ? [-2,-1,0,1,2] : items.length >= 3 ? [-1,0,1] : items.length === 2 ? [0,1] : [0];
         const pos = {{'-2':'pos_m2','-1':'pos_m1','0':'pos_c','1':'pos_p1','2':'pos_p2'}};
@@ -1161,6 +1157,7 @@ def render_seasonal_anime_panel(works: list[dict[str, Any]]) -> None:
           const record = {{ img: new Image(), loaded: false, failed: false, callbacks: [] }};
           record.img.decoding = 'async';
           record.img.loading = 'eager';
+          record.img.fetchPriority = 'low';
           record.img.referrerPolicy = 'no-referrer';
           record.img.onload = () => {{
             record.loaded = true;
@@ -1174,31 +1171,33 @@ def render_seasonal_anime_panel(works: list[dict[str, Any]]) -> None:
           record.img.src = url;
           return record;
         }}
-        function warmPosterCache() {{
-          // The viewport can show at most five cards. Preload those cards plus
-          // the two immediate neighbours instead of downloading a whole season.
-          const eagerIndexes = new Set(displaySlots().map(([, index]) => index));
-          if (items.length > eagerIndexes.size) {{
-            eagerIndexes.add((current - 3 + items.length) % items.length);
-            eagerIndexes.add((current + 3) % items.length);
-          }}
-          eagerIndexes.forEach(index => {{
+        function warmPosterCache(generation) {{
+          if (generation !== renderGeneration || items.length <= offsets.length) return;
+          const visibleIndexes = new Set(displaySlots().map(([, index]) => index));
+          const neighbourIndexes = [
+            (current - 3 + items.length) % items.length,
+            (current + 3) % items.length,
+          ].filter(index => !visibleIndexes.has(index));
+          neighbourIndexes.forEach(index => {{
             const item = items[index];
             const url = item?.image || item?.remote_image || '';
-            if (url) window.setTimeout(() => preloadImage(url), 140);
+            if (url) preloadImage(url);
           }});
         }}
-        function signature(item) {{
-          return String(item?.image || item?.title || item?.id || '');
+        function schedulePosterWarmup(generation) {{
+          if (warmTimer !== null) window.clearTimeout(warmTimer);
+          const run = () => warmPosterCache(generation);
+          if ('requestIdleCallback' in window) {{
+            window.requestIdleCallback(run, {{ timeout: 1200 }});
+          }} else {{
+            warmTimer = window.setTimeout(run, 500);
+          }}
         }}
-        function addSlot(slots, seenIndexes, seenSignatures, position, preferred, step) {{
+        function addSlot(slots, seenIndexes, position, preferred, step) {{
           for (let distance = 0; distance < items.length; distance += 1) {{
             const index = (preferred + distance * step + items.length) % items.length;
-            const item = items[index];
-            const sig = signature(item);
-            if (seenIndexes.has(index) || seenSignatures.has(sig)) continue;
+            if (seenIndexes.has(index)) continue;
             seenIndexes.add(index);
-            seenSignatures.add(sig);
             slots.push([position, index]);
             return;
           }}
@@ -1206,10 +1205,9 @@ def render_seasonal_anime_panel(works: list[dict[str, Any]]) -> None:
         function displaySlots() {{
           const slots = [];
           const seenIndexes = new Set();
-          const seenSignatures = new Set();
-          addSlot(slots, seenIndexes, seenSignatures, 0, current, 1);
-          offsets.filter(offset => offset < 0).forEach(offset => addSlot(slots, seenIndexes, seenSignatures, offset, current + offset, -1));
-          offsets.filter(offset => offset > 0).forEach(offset => addSlot(slots, seenIndexes, seenSignatures, offset, current + offset, 1));
+          addSlot(slots, seenIndexes, 0, current, 1);
+          offsets.filter(offset => offset < 0).forEach(offset => addSlot(slots, seenIndexes, offset, current + offset, -1));
+          offsets.filter(offset => offset > 0).forEach(offset => addSlot(slots, seenIndexes, offset, current + offset, 1));
           return slots.sort((a, b) => a[0] - b[0]);
         }}
         function cardBody(item) {{
@@ -1227,81 +1225,105 @@ def render_seasonal_anime_panel(works: list[dict[str, Any]]) -> None:
         }}
         function loadPoster(card, item) {{
           const poster = card.querySelector('.yg-season-poster');
-          if (!poster) return;
-          const token = poster.dataset.imageToken || '';
-          const sources = Array.from(new Set([item.image, item.remote_image].filter(Boolean)));
-          if (!sources.length) {{
-            poster.classList.add('is-missing');
-            return;
-          }}
-          let sourceIndex = 0;
-          let retryCount = 0;
-          const stillCurrent = () => poster.isConnected && poster.dataset.imageToken === token;
-          const retryUrl = (url) => {{
-            try {{
-              const next = new URL(url, window.location.href);
-              next.searchParams.set('_yg_retry', String(Date.now()));
-              return next.toString();
-            }} catch (error) {{
-              return url;
-            }}
-          }};
-          const startAttempt = () => {{
-            if (!stillCurrent()) return;
-            if (sourceIndex >= sources.length) {{
+          if (!poster) return Promise.resolve(false);
+          return new Promise(resolve => {{
+            const token = poster.dataset.imageToken || '';
+            const sources = Array.from(new Set([item.image, item.remote_image].filter(Boolean)));
+            const showFallback = () => {{
+              if (!poster.isConnected || poster.dataset.imageToken !== token) return false;
               poster.replaceChildren();
               poster.classList.remove('is-loaded');
               poster.classList.add('is-missing');
-              return;
-            }}
-            const source = sources[sourceIndex];
-            const img = document.createElement('img');
-            img.alt = item.title || '';
-            img.loading = 'eager';
-            img.decoding = 'async';
-            img.referrerPolicy = 'no-referrer';
-            img.fetchPriority = sourceIndex === 0 ? 'high' : 'auto';
-            poster.classList.remove('is-loaded', 'is-missing');
-            poster.replaceChildren(img);
-            let settled = false;
-            let timeoutId = null;
-            const settle = (loaded) => {{
-              if (settled) return;
-              settled = true;
-              if (timeoutId) window.clearTimeout(timeoutId);
-              if (!stillCurrent()) return;
-              if (loaded && img.naturalWidth > 0) {{
-                poster.classList.add('is-loaded');
-                preloadImage(source);
-                return;
-              }}
-              if (retryCount < 1) {{
-                retryCount += 1;
-              }} else {{
-                sourceIndex += 1;
-                retryCount = 0;
-              }}
-              window.setTimeout(startAttempt, 180);
+              return true;
             }};
-            img.onload = () => settle(true);
-            img.onerror = () => settle(false);
-            img.src = retryCount ? retryUrl(source) : source;
-            timeoutId = window.setTimeout(() => settle(false), 6000);
-            if (img.complete) window.queueMicrotask(() => settle(img.naturalWidth > 0));
-          }};
-          startAttempt();
+            if (!sources.length) {{ resolve(showFallback()); return; }}
+            let sourceIndex = 0;
+            let retryCount = 0;
+            const stillCurrent = () => poster.isConnected && poster.dataset.imageToken === token;
+            const retryUrl = (url) => {{
+              try {{
+                const next = new URL(url, window.location.href);
+                next.searchParams.set('_yg_retry', String(Date.now()));
+                return next.toString();
+              }} catch (error) {{ return url; }}
+            }};
+            const waitForDecode = (img) => {{
+              if (typeof img.decode !== 'function') return Promise.resolve(img.complete && img.naturalWidth > 0);
+              return new Promise(done => {{
+                let finished = false;
+                const finish = (decoded) => {{
+                  if (finished) return;
+                  finished = true;
+                  window.clearTimeout(decodeTimer);
+                  done(decoded);
+                }};
+                const decodeTimer = window.setTimeout(() => finish(false), 6000);
+                img.decode().then(() => finish(true)).catch(() => finish(false));
+              }});
+            }};
+            const startAttempt = () => {{
+              if (!stillCurrent()) {{ resolve(false); return; }}
+              if (sourceIndex >= sources.length) {{ resolve(showFallback()); return; }}
+              const source = sources[sourceIndex];
+              const img = document.createElement('img');
+              img.alt = item.title || '';
+              img.loading = 'eager';
+              img.decoding = 'async';
+              img.referrerPolicy = 'no-referrer';
+              img.fetchPriority = 'high';
+              poster.classList.remove('is-loaded', 'is-missing');
+              poster.replaceChildren(img);
+              let settled = false;
+              let timeoutId = null;
+              const settle = (loaded) => {{
+                if (settled) return;
+                settled = true;
+                if (timeoutId) window.clearTimeout(timeoutId);
+                if (!stillCurrent()) {{ resolve(false); return; }}
+                const advance = () => {{
+                  if (retryCount < 1) retryCount += 1;
+                  else {{ sourceIndex += 1; retryCount = 0; }}
+                  window.setTimeout(startAttempt, 180);
+                }};
+                if (loaded && img.naturalWidth > 0) {{
+                  waitForDecode(img).then(decoded => {{
+                    if (!stillCurrent()) {{ resolve(false); return; }}
+                    if (!decoded || img.naturalWidth <= 0) {{ advance(); return; }}
+                    poster.classList.add('is-loaded');
+                    resolve(true);
+                  }});
+                  return;
+                }}
+                advance();
+              }};
+              img.onload = () => settle(true);
+              img.onerror = () => settle(false);
+              img.src = retryCount ? retryUrl(source) : source;
+              timeoutId = window.setTimeout(() => settle(false), 6000);
+              if (img.complete) window.queueMicrotask(() => settle(img.naturalWidth > 0));
+            }};
+            startAttempt();
+          }});
         }}
         function animationClass(finalClass, delta) {{
           if (!delta || finalClass === 'pos_off') return '';
           return `anim-${{delta === 1 ? 'next' : 'prev'}}-${{finalClass}}`;
         }}
-        function render(instant=false, delta=0) {{
+        const waitForPaint = () => new Promise(resolve => {{
+          window.requestAnimationFrame(() => window.requestAnimationFrame(resolve));
+        }});
+        async function render(instant=false, delta=0) {{
+          const generation = ++renderGeneration;
+          stopAuto();
+          root.classList.add('is-loading');
+          stage.classList.remove('is-ready');
           try {{ window.parent.sessionStorage.setItem(storageKey, String(current)); }} catch (error) {{}}
           page.textContent = `第 ${{current + 1}} / ${{items.length}} 部`;
           const rawActiveDay = items[current]?.broadcast_day;
           const activeDay = rawActiveDay === null || rawActiveDay === undefined ? -1 : Number(rawActiveDay);
           weekButtons.forEach(button => button.classList.toggle('is-active', Number(button.dataset.broadcastDay) === activeDay));
           const slots = displaySlots();
+          const posterLoads = [];
           cards.forEach((card, index) => {{
             const slot = slots[index];
             if (!slot) {{
@@ -1319,7 +1341,7 @@ def render_seasonal_anime_panel(works: list[dict[str, Any]]) -> None:
             card.dataset.itemTitle = item.title || '';
             card.dataset.expectedImage = item.image || '';
             card.innerHTML = cardBody(item);
-            loadPoster(card, item);
+            posterLoads.push(loadPoster(card, item));
             card.style.animation = 'none';
             card.className = `yg-season-card ${{finalClass}}`;
             card.offsetHeight;
@@ -1330,26 +1352,44 @@ def render_seasonal_anime_panel(works: list[dict[str, Any]]) -> None:
               card.addEventListener('animationend', () => card.classList.remove(motion), {{ once: true }});
             }}
           }});
-          window.setTimeout(warmPosterCache, 120);
+          const results = await Promise.all(posterLoads);
+          if (generation !== renderGeneration) return false;
+          const complete = results.length === offsets.length && results.every(Boolean);
+          if (!complete) {{ root.classList.remove('is-loading'); return false; }}
+          await waitForPaint();
+          if (generation !== renderGeneration) return false;
+          stage.classList.add('is-ready');
+          root.classList.remove('is-loading');
+          schedulePosterWarmup(generation);
+          return true;
+        }}
+        function stopAuto() {{
+          if (autoTimer) window.clearTimeout(autoTimer);
+          autoTimer = null;
+          const progress = root.querySelector('.yg-season-progress');
+          if (progress) progress.classList.remove('is-running');
         }}
         function restartAuto() {{
-          if (autoTimer) window.clearTimeout(autoTimer);
+          stopAuto();
           const progress = root.querySelector('.yg-season-progress');
           if (!progress) return;
-          progress.classList.remove('is-running');
           progress.offsetHeight;
           if (items.length > 1) {{
             progress.classList.add('is-running');
             autoTimer = window.setTimeout(() => move(1, false), autoDelay);
           }}
         }}
-        function move(delta, manual=true) {{
+        async function move(delta, manual=true) {{
           if (items.length < 2 || moving) return;
           moving = true;
-          current = (current + delta + items.length) % items.length;
-          render(false, delta);
-          restartAuto();
-          window.setTimeout(() => {{ moving = false; }}, 680);
+          try {{
+            current = (current + delta + items.length) % items.length;
+            const ready = await render(false, delta);
+            if (ready) {{
+              restartAuto();
+              await new Promise(resolve => window.setTimeout(resolve, 650));
+            }}
+          }} finally {{ moving = false; }}
         }}
         function navigateTop(href) {{
           const target = new URL(href, window.parent.location.origin).toString();
@@ -1405,17 +1445,20 @@ def render_seasonal_anime_panel(works: list[dict[str, Any]]) -> None:
             item.broadcast_day !== null && item.broadcast_day !== undefined && Number(item.broadcast_day) === day
           );
           button.disabled = matches.length === 0;
-          button.addEventListener('click', () => {{
-            if (!matches.length) return;
+          button.addEventListener('click', async () => {{
+            if (!matches.length || moving) return;
+            moving = true;
             matches.sort((a, b) => Number(a[0].broadcast_sort || 999999) - Number(b[0].broadcast_sort || 999999));
             current = matches[0][1];
-            moving = false;
-            render(true, 0);
-            restartAuto();
+            try {{
+              const ready = await render(true, 0);
+              if (ready) restartAuto();
+            }} finally {{ moving = false; }}
           }});
         }});
-        render(true, 0);
-        restartAuto();
+        render(true, 0).then(ready => {{
+          if (ready) restartAuto();
+        }});
       }})();
     </script>
     """
