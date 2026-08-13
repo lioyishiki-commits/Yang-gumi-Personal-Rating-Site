@@ -105,6 +105,16 @@ class UpdaterTest(unittest.TestCase):
         with (
             patch.object(updater, "_head_commit", return_value="v110-head"),
             patch.object(updater, "_remote_version", return_value="1.1.0"),
+            patch.object(
+                updater,
+                "_download_snapshot",
+                side_effect=self.snapshot_with({
+                    "app.py": b"VALUE = 'old'\n",
+                    "database.py": b"VALUE = 'db'\n",
+                    "启动 Yang-gumi.bat": b"@echo off\n",
+                    "update_yanggumi.py": b"# updater\n",
+                }),
+            ),
             patch.object(updater, "_tag_commit") as tag_commit,
             patch.object(updater, "_request_json") as request_json,
         ):
@@ -120,6 +130,16 @@ class UpdaterTest(unittest.TestCase):
         with (
             patch.object(updater, "_head_commit", return_value="v100-head"),
             patch.object(updater, "_remote_version", return_value="1.0.0"),
+            patch.object(
+                updater,
+                "_download_snapshot",
+                side_effect=self.snapshot_with({
+                    "app.py": b"VALUE = 'old'\n",
+                    "database.py": b"VALUE = 'db'\n",
+                    "启动 Yang-gumi.bat": b"@echo off\n",
+                    "update_yanggumi.py": b"# updater\n",
+                }),
+            ),
             patch.object(restart_yanggumi, "restart_running_site", return_value={"restarted": True}) as restart,
         ):
             self.assertEqual(updater.check_and_update(restart_running=True), 0)
