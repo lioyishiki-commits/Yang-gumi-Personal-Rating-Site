@@ -25,8 +25,8 @@ SAVED_PUBLIC_REFRESH_PATH = ROOT / "data" / "saved_bangumi_refresh.json"
 PUBLIC_DATA_REFRESH_PATH = ROOT / "data" / "public_data_refresh.json"
 KISSSUB_SCHEDULE_URL = "http://www.kisssub.org/"
 BGM_CALENDAR_URL = "https://bgm.tv/calendar"
-YUC_SEASON_BASE_URL = "https://yuc.wiki"
-SEASONAL_CACHE_REVISION = "dual-source-tv-yuc-bgm-v2"
+YUC_SEASON_BASE_URLS = ("https://yuc.wiki", "http://yuc.wiki")
+SEASONAL_CACHE_REVISION = "dual-source-tv-yuc-bgm-v3"
 KISSSUB_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Yang-gumi/1.0",
     "Accept-Language": "zh-CN,zh;q=0.9,ja;q=0.7",
@@ -318,7 +318,12 @@ def fetch_bgm_calendar_entries() -> list[dict[str, Any]]:
 
 
 def yuc_season_url(season: dict[str, Any]) -> str:
-    return f"{YUC_SEASON_BASE_URL}/{int(season['year'])}{int(season['start_month']):02d}/"
+    return yuc_season_urls(season)[0]
+
+
+def yuc_season_urls(season: dict[str, Any]) -> list[str]:
+    suffix = f"{int(season['year'])}{int(season['start_month']):02d}/"
+    return [f"{base}/{suffix}" for base in YUC_SEASON_BASE_URLS]
 
 
 def parse_yuc_season_entries(page_html: str) -> list[dict[str, str]]:
@@ -429,9 +434,21 @@ def _yuc_titles_are_aliases(schedule_title: str, detail_title: str) -> bool:
 
 
 def fetch_yuc_season_entries(season: dict[str, Any]) -> list[dict[str, Any]]:
-    response = requests.get(yuc_season_url(season), headers=KISSSUB_HEADERS, timeout=(5, 30))
-    response.raise_for_status()
-    response.encoding = "utf-8"
+    errors: list[str] = []
+    response = None
+    for url in yuc_season_urls(season):
+        try:
+            candidate = requests.get(url, headers=KISSSUB_HEADERS, timeout=(5, 30))
+            candidate.raise_for_status()
+            candidate.encoding = "utf-8"
+            if not candidate.text.strip():
+                raise RuntimeError("YUC returned an empty page")
+            response = candidate
+            break
+        except requests.RequestException as exc:
+            errors.append(f"{url}: {exc}")
+    if response is None:
+        raise RuntimeError("YUC 当季页面抓取失败：" + "；".join(errors))
     details = parse_yuc_season_entries(response.text)
     details_by_key = {bgm.normalize_title(entry["title"]): entry for entry in details}
     details_by_poster = {entry["poster_url"]: entry for entry in details if entry.get("poster_url")}
@@ -456,6 +473,13 @@ def fetch_yuc_season_entries(season: dict[str, Any]) -> list[dict[str, Any]]:
         entries.append(merged)
     if not entries:
         raise RuntimeError("Yuc Wiki 当季页面没有解析到标题和海报")
+    regular_count = sum(1 for entry in entries if not entry.get("is_short") and not entry.get("is_endless"))
+    if not details:
+        raise RuntimeError("YUC 当季详情主清单为空，拒绝覆盖已验证缓存")
+    if abs(regular_count - len(details)) > 5:
+        raise RuntimeError(
+            f"YUC 当季解析不完整：周表常规动画 {regular_count} 部，详情主清单 {len(details)} 部"
+        )
     return entries
 
 
@@ -934,6 +958,7 @@ def _refresh_current_season(value: date | datetime | None = None) -> tuple[dict[
     source_entry["last_match_attempt"] = datetime.now().isoformat(timespec="seconds")
     source_entry["pending_titles"] = failed_titles
     regular_yuc_titles = [title for title in yuc_titles if title not in short_titles]
+    live_yuc_ok = not yuc_error and bool(yuc_titles)
     source_entry["quarter_audit"] = {
         "audited_at": datetime.now().isoformat(timespec="seconds"),
         "status": "complete" if all(title in matches for title in regular_yuc_titles) else "incomplete",
@@ -945,6 +970,7 @@ def _refresh_current_season(value: date | datetime | None = None) -> tuple[dict[
         "pending_bgm_calendar_ids": calendar_failures,
         "bangumi_official_candidates": len(official_ids),
         "matched_union_subjects": len({int(subject_id) for subject_id in matches.values()}),
+        "live_yuc_ok": live_yuc_ok,
     }
     for item in seeded:
         bangumi_id = int(item["bangumi_id"])
@@ -1037,6 +1063,21 @@ def _refresh_current_season(value: date | datetime | None = None) -> tuple[dict[
         "yuc_count_difference": yuc_count_difference,
         "count_tolerance": 5,
     })
+    if not live_yuc_ok:
+        source_entry["quarter_audit"]["status"] = "error"
+        _save_source_manifest(source_payload)
+        message = yuc_error or "YUC 当季页面未完成实时抓取，拒绝覆盖上一份已验证缓存"
+        db.mark_seasonal_sync(season["year"], season["season_code"], "error", message)
+        raise RuntimeError(message)
+    if len(candidates) != len(regular_yuc_titles):
+        source_entry["quarter_audit"]["status"] = "error"
+        _save_source_manifest(source_payload)
+        message = (
+            f"YUC 当季常规动画 {len(regular_yuc_titles)} 部，但 Bangumi 唯一匹配后为 "
+            f"{len(candidates)} 部，拒绝覆盖上一份已验证缓存"
+        )
+        db.mark_seasonal_sync(season["year"], season["season_code"], "error", message)
+        raise RuntimeError(message)
     if yuc_reference_count and yuc_count_difference > 5:
         source_entry["quarter_audit"]["status"] = "error"
         _save_source_manifest(source_payload)
