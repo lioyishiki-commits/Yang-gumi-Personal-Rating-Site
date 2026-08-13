@@ -51,6 +51,19 @@ class UpdaterTest(unittest.TestCase):
             item.stop()
         self.temp.cleanup()
 
+    @staticmethod
+    def snapshot_with(files: dict[str, bytes]):
+        def download_snapshot(_head: str, staging: Path):
+            result = []
+            for relative, content in files.items():
+                target = staging / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(content)
+                result.append({"filename": relative, "status": "modified"})
+            return result
+
+        return download_snapshot
+
     def test_delta_update_uses_remote_version_and_program_only_rollback(self):
         new_app = b"VALUE = 'new'\n"
         compare = {
@@ -66,7 +79,11 @@ class UpdaterTest(unittest.TestCase):
             patch.object(updater, "_head_commit", return_value="head"),
             patch.object(updater, "_remote_version", return_value="1.0.1"),
             patch.object(updater, "_request_json", return_value=compare),
-            patch.object(updater, "_download", return_value=new_app),
+            patch.object(
+                updater,
+                "_download_snapshot",
+                side_effect=self.snapshot_with({"app.py": new_app}),
+            ),
             patch.dict(os.environ, {"YANGGUMI_UPDATE_SKIP_PROMPT": "Y"}),
         ):
             self.assertEqual(updater.check_and_update(), 0)
@@ -132,7 +149,14 @@ class UpdaterTest(unittest.TestCase):
             patch.object(updater, "_head_commit", return_value="v125-head"),
             patch.object(updater, "_remote_version", return_value="1.2.6"),
             patch.object(updater, "_request_json", return_value=compare),
-            patch.object(updater, "_download", side_effect=[new_seasonal, new_updater]),
+            patch.object(
+                updater,
+                "_download_snapshot",
+                side_effect=self.snapshot_with({
+                    "seasonal_service.py": new_seasonal,
+                    "update_yanggumi.py": new_updater,
+                }),
+            ),
             patch.dict(os.environ, {"YANGGUMI_UPDATE_SKIP_PROMPT": "Y"}),
         ):
             self.assertEqual(updater.check_and_update(), 0)
@@ -175,7 +199,11 @@ class UpdaterTest(unittest.TestCase):
             patch.object(updater, "_remote_version", return_value="1.0.1"),
             patch.object(updater, "_tag_commit", return_value="official-v100") as tag_commit,
             patch.object(updater, "_request_json", side_effect=[diverged, official_compare]) as request_json,
-            patch.object(updater, "_download", return_value=new_app),
+            patch.object(
+                updater,
+                "_download_snapshot",
+                side_effect=self.snapshot_with({"app.py": new_app}),
+            ),
             patch.dict(os.environ, {"YANGGUMI_UPDATE_SKIP_PROMPT": "Y"}),
         ):
             self.assertEqual(updater.check_and_update(), 0)
@@ -238,7 +266,11 @@ class UpdaterTest(unittest.TestCase):
             patch.object(updater, "_head_commit", return_value="head"),
             patch.object(updater, "_remote_version", return_value="1.0.1"),
             patch.object(updater, "_request_json", return_value=compare),
-            patch.object(updater, "_download", return_value=new_app) as download,
+            patch.object(
+                updater,
+                "_download_snapshot",
+                side_effect=self.snapshot_with({"app.py": new_app}),
+            ) as download,
             patch.dict(os.environ, {"YANGGUMI_UPDATE_SKIP_PROMPT": "Y"}),
         ):
             self.assertEqual(updater.check_and_update(), 0)

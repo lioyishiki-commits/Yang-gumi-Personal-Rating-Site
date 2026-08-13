@@ -472,6 +472,12 @@ def check_and_update(*, restart_running: bool = False) -> int:
         _restart_running_site_if_requested(restart_running)
         print("本季新番缓存会在网站启动后自动检查算法版本并按需重新核对。")
         return 0
+    if current_tuple == target_tuple and not state.get("commit") and not state.get("version"):
+        _write_state(current_version, head, "none")
+        print(f"当前程序版本已经是最新版本 {current_version}；已补全本机更新记录。")
+        _restart_running_site_if_requested(restart_running)
+        print("本季新番缓存会在网站启动后自动检查算法版本并按需重新核对。")
+        return 0
     state_version = str(state.get("version") or "")
     base = str(state.get("commit") or "") if state_version == current_version else ""
     state_base = base
